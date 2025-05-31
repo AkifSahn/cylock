@@ -3,9 +3,11 @@
 #include <gtk/gtk.h>
 #include <netinet/in.h>
 #include <pthread.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "libspoof.h"
 
@@ -34,23 +36,59 @@ gboolean show_incoming_message(gpointer data) {
 	return FALSE; // only run once
 }
 
+#define CACHE_SIZE 10
+typedef struct id_cache {
+	uint8_t i;
+	uint16_t cache[CACHE_SIZE];
+} id_cache;
+
+void cache_add(id_cache* cache, uint16_t e) {
+	if (cache->i >= CACHE_SIZE - 1) // rewind back
+		cache->i = 0;
+
+	cache->cache[cache->i++] = e;
+}
+
+int cache_search(const id_cache* cache, uint16_t e) {
+	for (int i = 0; i < CACHE_SIZE; ++i) {
+		if (cache->cache[i] == e) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+void cache_clear(id_cache* cache) {
+	memset(cache->cache, 0, CACHE_SIZE * sizeof(uint16_t));
+	cache->i = 0;
+}
+
 // Global
 node_t node;
+id_cache cache;
 
 // GTK thread-safe message post
-void gui_message_callback(const char* sender, node_e sender_type, const char* message, int message_len) {
-	char* msg = g_strdup_printf("%s: %.*s", sender, message_len, message);
+void gui_message_callback(const header_t* header, const char* message, int message_len) {
+	if (node.type == N_GATEWAY && cache_search(&cache, header->id)) {
+		return;
+	}
+
+	char* msg = g_strdup_printf("%s: %.*s", header->name, message_len, message);
 	g_idle_add(show_incoming_message, msg);
 
-	// if (node.type == N_GATEWAY) { //  && strcmp(sender, nickname)) {
-	// 	if (sender_type == N_GATEWAY) { /* If message is coming from a gateway, just broadcast to local subnet */
-	// 		udp_send(message, message_len, sender, sender_type, "192.168.1.255", 6969);
-	// 	} else { /* If message is coming from a normal client, send to other known gateways*/
-	// 		for (int i = 0; i < num_gw_ips; ++i) {
-	// 			udp_send(message, message_len, nickname, node.type, gateway_ips[i], 6969);
-	// 		}
-	// 	}
-	// }
+	if (node.type == N_GATEWAY) {
+		/*
+		  If coming from outside, we also want to broadcast?
+		  TODO: can't have more than 1 gw in same subnet with this
+		*/
+		cache_add(&cache, header->id);
+		if (header->node_type == N_GATEWAY) {
+			udp_send(message, message_len, header->name, header->node_type, header->id, "255.255.255.255", 6969);
+		}
+		for (int i = 0; i < num_gw_ips; ++i) {
+			udp_send(message, message_len, header->name, header->node_type, header->id, gateway_ips[i], 6969);
+		}
+	}
 }
 
 // Placeholder: Call your networking C functions here!
@@ -88,6 +126,11 @@ void connect_to_network(GtkWindow* parent) {
 			snprintf(status, sizeof(status), "Connected as %s. Mode: %s", nickname, node_mode);
 			gtk_statusbar_push(GTK_STATUSBAR(statusbar), context_id, status);
 
+            // Set the node id
+            srand(time(NULL));
+            node.id = rand() % UINT16_MAX;
+
+			cache_clear(&cache); // Reset the id cache
 			if (start_udp_receiver(&node, RECV_PORT, gui_message_callback) == 0) {
 				printf("Connected to network!");
 			}
@@ -133,14 +176,15 @@ void send_message(GtkWidget* widget, gpointer data) {
 		// Don't spoof the ip source when sending to other gateways
 		if (node.type == N_GATEWAY) {
 			for (int i = 0; i < num_gw_ips; ++i) {
-				udp_send(msg, strlen(msg), nickname, node.type, gateway_ips[i], 6969);
+				udp_send(msg, strlen(msg), nickname, node.type, node.id, gateway_ips[i], 6969);
 			}
-			udp_send(msg, strlen(msg), nickname, node.type, "192.168.1.255", 6969);
+			udp_send(msg, strlen(msg), nickname, node.type, node.id, "192.168.1.255", 6969);
 		} else {
 			// TODO: Use spoofed ip
-			udp_send_raw(msg, strlen(msg), nickname, node.type, "192.168.1.46", "192.168.1.255", 3131, 6969);
+			udp_send_raw(msg, strlen(msg), nickname, node.type, node.id, "192.168.1.46", "192.168.1.255", 3131, 6969);
 		}
 
+        node.id++;
 		gtk_entry_set_text(GTK_ENTRY(entry), "");
 	}
 }

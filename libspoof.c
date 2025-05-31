@@ -72,7 +72,7 @@ void* udp_receive_thread(void* arg) {
 			header_t* custom = (header_t*)buffer;
 			char* msg = (char*)(buffer + sizeof(header_t));
 			int msg_len = n - sizeof(header_t);
-			node->on_message(custom->name, custom->node_type, msg, msg_len); // callback to GUI
+			node->on_message(custom, msg, msg_len); // callback to GUI
 		}
 	}
 	close(sockfd);
@@ -101,8 +101,8 @@ int stop_udp_receiver(node_t* node) {
 
 // takes a  data with size data_size
 // broadcasts to d_port with spoofed ip if randomize_ip is set
-void udp_send_raw(
-	const char* msg, uint16_t size, const char name[NAME_LEN], node_e node_type, char s_ip[INET_ADDRSTRLEN], char d_ip[INET_ADDRSTRLEN], uint16_t s_port, uint16_t d_port) {
+void udp_send_raw(const char* msg, uint16_t size, const char name[NAME_LEN], node_e n_type, uint16_t id,
+	char s_ip[INET_ADDRSTRLEN], char d_ip[INET_ADDRSTRLEN], uint16_t s_port, uint16_t d_port) {
 	// Initialize variables.
 	char buffer[PCKT_LEN];
 
@@ -111,19 +111,12 @@ void udp_send_raw(
 	struct udphdr* udphdr = (struct udphdr*)(buffer + sizeof(struct iphdr));
 	header_t* custom_header = (header_t*)(buffer + sizeof(struct iphdr) + sizeof(struct udphdr));
 
-	// Pointer for payload
-
 	int sockfd;
 	struct sockaddr_in sin;
-	struct sockaddr_in din;
 	int one = 1;
-	int addrLen = sizeof(din);
 
 	// Set packet buffer to 0's.
 	memset(buffer, 0, PCKT_LEN);
-
-	// Check for data.
-	int pcktDataLen = 0;
 
 	// Adds data to the packet's payload (after IP + UDP headers).
 	// Can we use memcpy instead?
@@ -131,9 +124,9 @@ void udp_send_raw(
 	// header_t *header = (header_t*)(buffer + sizeof(struct iphdr) + sizeof(struct udphdr));
 	custom_header->size = htons(sizeof(header_t) + size);
 	memcpy(custom_header->name, name, NAME_LEN);
-    custom_header->node_type = node_type;
+	custom_header->node_type = n_type;
 	custom_header->cl_bit = 0; // TODO: Needed for control messages
-	custom_header->id = 0; // TODO: Needed for fragmentation
+	custom_header->id = id; // TODO: Needed for fragmentation
 	custom_header->frag_num = 0;
 	custom_header->total_fragments = 0;
 	char* pcktData = (char*)(buffer + sizeof(struct iphdr) + sizeof(struct udphdr) + sizeof(header_t));
@@ -198,7 +191,8 @@ void udp_send_raw(
 	close(sockfd);
 }
 
-void udp_send(const char* msg, uint16_t size, const char name[NAME_LEN], node_e node_type, char d_ip[INET_ADDRSTRLEN], uint16_t d_port) {
+void udp_send(const char* msg, uint16_t size, const char name[NAME_LEN], node_e n_type, uint16_t id, char d_ip[INET_ADDRSTRLEN],
+	uint16_t d_port) {
 
 	// Compose payload: header + message
 	char buffer[1024];
@@ -208,9 +202,9 @@ void udp_send(const char* msg, uint16_t size, const char name[NAME_LEN], node_e 
 
 	custom_header->size = htons(sizeof(header_t) + size);
 	memcpy(custom_header->name, name, NAME_LEN);
-    custom_header->node_type = node_type;
+	custom_header->node_type = n_type;
 	custom_header->cl_bit = 0;
-	custom_header->id = 0;
+	custom_header->id = id;
 	custom_header->frag_num = 0;
 	custom_header->total_fragments = 0;
 
@@ -226,12 +220,12 @@ void udp_send(const char* msg, uint16_t size, const char name[NAME_LEN], node_e 
 		exit(EXIT_FAILURE);
 	}
 
-    int broadcast = 1;
-    if(setsockopt(sockfd, SOL_SOCKET, SO_BROADCAST, &broadcast, sizeof(broadcast)) < 0){
-        perror("setsockopt");
-        close(sockfd);
-        return;
-    }
+	int broadcast = 1;
+	if (setsockopt(sockfd, SOL_SOCKET, SO_BROADCAST, &broadcast, sizeof(broadcast)) < 0) {
+		perror("setsockopt");
+		close(sockfd);
+		return;
+	}
 
 	struct sockaddr_in dest;
 	memset(&dest, 0, sizeof(dest));
