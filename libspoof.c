@@ -1,9 +1,9 @@
 #include <arpa/inet.h>
+#include <asm-generic/socket.h>
 #include <assert.h>
 #include <errno.h>
 #include <netinet/ip.h>
 #include <netinet/udp.h>
-#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -72,7 +72,7 @@ void* udp_receive_thread(void* arg) {
 			header_t* custom = (header_t*)buffer;
 			char* msg = (char*)(buffer + sizeof(header_t));
 			int msg_len = n - sizeof(header_t);
-			node->on_message(custom->name, msg, msg_len); // callback to GUI
+			node->on_message(custom->name, custom->node_type, msg, msg_len); // callback to GUI
 		}
 	}
 	close(sockfd);
@@ -101,8 +101,8 @@ int stop_udp_receiver(node_t* node) {
 
 // takes a  data with size data_size
 // broadcasts to d_port with spoofed ip if randomize_ip is set
-void udp_send(
-	const char* msg, uint16_t size, char name[NAME_LEN], char s_ip[16], char d_ip[16], uint16_t s_port, uint16_t d_port) {
+void udp_send_raw(
+	const char* msg, uint16_t size, const char name[NAME_LEN], node_e node_type, char s_ip[INET_ADDRSTRLEN], char d_ip[INET_ADDRSTRLEN], uint16_t s_port, uint16_t d_port) {
 	// Initialize variables.
 	char buffer[PCKT_LEN];
 
@@ -131,6 +131,7 @@ void udp_send(
 	// header_t *header = (header_t*)(buffer + sizeof(struct iphdr) + sizeof(struct udphdr));
 	custom_header->size = htons(sizeof(header_t) + size);
 	memcpy(custom_header->name, name, NAME_LEN);
+    custom_header->node_type = node_type;
 	custom_header->cl_bit = 0; // TODO: Needed for control messages
 	custom_header->id = 0; // TODO: Needed for fragmentation
 	custom_header->frag_num = 0;
@@ -194,5 +195,55 @@ void udp_send(
 	}
 
 	// Close socket.
+	close(sockfd);
+}
+
+void udp_send(const char* msg, uint16_t size, const char name[NAME_LEN], node_e node_type, char d_ip[INET_ADDRSTRLEN], uint16_t d_port) {
+
+	// Compose payload: header + message
+	char buffer[1024];
+	header_t* custom_header = (header_t*)buffer;
+
+	memset(buffer, 0, sizeof(buffer));
+
+	custom_header->size = htons(sizeof(header_t) + size);
+	memcpy(custom_header->name, name, NAME_LEN);
+    custom_header->node_type = node_type;
+	custom_header->cl_bit = 0;
+	custom_header->id = 0;
+	custom_header->frag_num = 0;
+	custom_header->total_fragments = 0;
+
+	char* pcktData = buffer + sizeof(header_t);
+	memcpy(pcktData, msg, size);
+
+	int payload_len = sizeof(header_t) + size;
+
+	// Setup UDP socket
+	int sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+	if (sockfd < 0) {
+		perror("socket");
+		exit(EXIT_FAILURE);
+	}
+
+    int broadcast = 1;
+    if(setsockopt(sockfd, SOL_SOCKET, SO_BROADCAST, &broadcast, sizeof(broadcast)) < 0){
+        perror("setsockopt");
+        close(sockfd);
+        return;
+    }
+
+	struct sockaddr_in dest;
+	memset(&dest, 0, sizeof(dest));
+	dest.sin_family = AF_INET;
+	dest.sin_port = htons(d_port);
+	dest.sin_addr.s_addr = inet_addr(d_ip);
+
+	// Send UDP datagram
+	ssize_t sent = sendto(sockfd, buffer, payload_len, 0, (struct sockaddr*)&dest, sizeof(dest));
+	if (sent < 0) {
+		perror("sendto");
+	}
+
 	close(sockfd);
 }

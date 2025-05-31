@@ -2,8 +2,9 @@
 #ifndef LIBSPOOF_H
 #define LIBSPOOF_H
 
-#include <stdint.h>
+#include <netinet/in.h>
 #include <pthread.h>
+#include <stdint.h>
 
 typedef enum {
 	N_CLIENT,
@@ -15,7 +16,7 @@ typedef enum {
 
 #define NAME_LEN 32
 
-typedef void (*message_callback_t)(const char *sender, const char *message, int message_len);
+typedef void (*message_callback_t)(const char* sender, node_e sender_type, const char* message, int message_len);
 
 // Add to node_t
 typedef struct Node {
@@ -27,10 +28,10 @@ typedef struct Node {
 	message_callback_t on_message; // function pointer for callback
 } node_t;
 
-
 typedef struct {
-	uint16_t size; // Size of the payload. 2^16-1
+	uint16_t size; // Size of the payload.
 	char name[NAME_LEN]; // nickname of the sender
+	node_e node_type;
 	uint8_t cl_bit; // control bit. If set, indicates the message is a control message
 	uint32_t id; // Packet ID
 	uint16_t frag_num; // Fragmentation number
@@ -40,10 +41,12 @@ typedef struct {
 // Functions
 void generate_random_ip(char* ip_str);
 
-int start_udp_receiver(node_t *node, uint16_t listen_port, message_callback_t cb);
-int stop_udp_receiver(node_t *node);
+int start_udp_receiver(node_t* node, uint16_t listen_port, message_callback_t cb);
+int stop_udp_receiver(node_t* node);
 
-void udp_send(const char* msg, uint16_t size,char name[NAME_LEN], char s_ip[16], char d_ip[16], uint16_t s_port, uint16_t d_port);
-
+void udp_send_raw(const char* msg, uint16_t size, const char name[NAME_LEN], node_e node_type, char s_ip[INET_ADDRSTRLEN],
+	char d_ip[INET_ADDRSTRLEN], uint16_t s_port, uint16_t d_port);
+void udp_send(
+	const char* msg, uint16_t size, const char name[NAME_LEN], node_e node_type, char d_ip[INET_ADDRSTRLEN], uint16_t d_port);
 
 #endif

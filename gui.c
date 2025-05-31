@@ -4,6 +4,7 @@
 #include <netinet/in.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "libspoof.h"
@@ -17,6 +18,9 @@ guint context_id;
 char nickname[64] = "Anonymous";
 gboolean connected = FALSE;
 char node_mode[16] = "Client";
+
+int num_gw_ips = 0;
+char (*gateway_ips)[INET_ADDRSTRLEN];
 
 // This function runs on the GTK main thread to update the chat window
 gboolean show_incoming_message(gpointer data) {
@@ -34,9 +38,19 @@ gboolean show_incoming_message(gpointer data) {
 node_t node;
 
 // GTK thread-safe message post
-void gui_message_callback(const char* sender, const char* message, int message_len) {
+void gui_message_callback(const char* sender, node_e sender_type, const char* message, int message_len) {
 	char* msg = g_strdup_printf("%s: %.*s", sender, message_len, message);
 	g_idle_add(show_incoming_message, msg);
+
+	// if (node.type == N_GATEWAY) { //  && strcmp(sender, nickname)) {
+	// 	if (sender_type == N_GATEWAY) { /* If message is coming from a gateway, just broadcast to local subnet */
+	// 		udp_send(message, message_len, sender, sender_type, "192.168.1.255", 6969);
+	// 	} else { /* If message is coming from a normal client, send to other known gateways*/
+	// 		for (int i = 0; i < num_gw_ips; ++i) {
+	// 			udp_send(message, message_len, nickname, node.type, gateway_ips[i], 6969);
+	// 		}
+	// 	}
+	// }
 }
 
 // Placeholder: Call your networking C functions here!
@@ -114,18 +128,18 @@ void send_message(GtkWidget* widget, gpointer data) {
 			gtk_widget_destroy(dialog);
 			return;
 		}
-		// Call your networking send function here!
-		// send_message_to_network(nickname, msg);
-		udp_send(msg, strlen(msg), nickname, "192.168.1.46", "255.255.255.255", 3131, 6969);
 
-		// Add to chat display
-		GtkTextBuffer* buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(text_view));
-		GtkTextIter end;
-		gtk_text_buffer_get_end_iter(buffer, &end);
-
-		char formatted_msg[512];
-		snprintf(formatted_msg, sizeof(formatted_msg), "%s: %s\n", nickname, msg);
-		gtk_text_buffer_insert(buffer, &end, formatted_msg, -1);
+		// If gateway, send the message to the other gateways on the gateway_ips.txt list.
+		// Don't spoof the ip source when sending to other gateways
+		if (node.type == N_GATEWAY) {
+			for (int i = 0; i < num_gw_ips; ++i) {
+				udp_send(msg, strlen(msg), nickname, node.type, gateway_ips[i], 6969);
+			}
+			udp_send(msg, strlen(msg), nickname, node.type, "192.168.1.255", 6969);
+		} else {
+			// TODO: Use spoofed ip
+			udp_send_raw(msg, strlen(msg), nickname, node.type, "192.168.1.46", "192.168.1.255", 3131, 6969);
+		}
 
 		gtk_entry_set_text(GTK_ENTRY(entry), "");
 	}
@@ -144,20 +158,59 @@ void on_about(GtkMenuItem* menuitem, gpointer user_data) { show_about(GTK_WINDOW
 
 // Node Mode callbacks
 void on_mode_client(GtkMenuItem* menuitem, gpointer user_data) {
+	node.type = N_CLIENT;
+
 	strcpy(node_mode, "Client");
 	char status[128];
 	snprintf(status, sizeof(status), "Mode: Client");
 	gtk_statusbar_push(GTK_STATUSBAR(statusbar), context_id, status);
 }
 void on_mode_gateway(GtkMenuItem* menuitem, gpointer user_data) {
+	node.type = N_GATEWAY;
+
 	strcpy(node_mode, "Gateway");
 	char status[128];
 	snprintf(status, sizeof(status), "Mode: Gateway");
 	gtk_statusbar_push(GTK_STATUSBAR(statusbar), context_id, status);
 }
 
+void read_gateway_ips(char* filename) {
+	FILE* f = fopen(filename, "r");
+	if (!f) {
+		perror("fopen");
+		exit(1);
+	}
+
+	char line[INET_ADDRSTRLEN];
+
+	while (fgets(line, sizeof(line), f)) {
+		num_gw_ips++;
+	}
+	rewind(f);
+
+	gateway_ips = malloc(num_gw_ips * INET_ADDRSTRLEN);
+	if (!gateway_ips) {
+		perror("malloc");
+		fclose(f);
+		exit(1);
+	}
+
+	int i = 0;
+	while (fgets(line, sizeof(line), f)) {
+		line[strcspn(line, "\r\n")] = 0;
+		strncpy(gateway_ips[i], line, 15);
+		gateway_ips[i][15] = '\0';
+		i++;
+	}
+
+	fclose(f);
+}
+
 int main(int argc, char* argv[]) {
 	gtk_init(&argc, &argv);
+
+	// Read known gateway ips from gw_ips.txt
+	read_gateway_ips("gw_ips.txt");
 
 	GtkWidget* window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
 	gtk_window_set_title(GTK_WINDOW(window), "Anonymous P2P Chat");
