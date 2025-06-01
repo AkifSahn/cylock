@@ -159,6 +159,18 @@ void remove_client(struct known_clients* clients, const char name[NAME_LEN]) {
 	}
 }
 
+void clear_clients(struct known_clients* clients) {
+    struct client* curr = clients->head;
+    while (curr) {
+        struct client* next = curr->next;
+        free(curr);
+        curr = next;
+    }
+    clients->head = NULL;
+    clients->tail = NULL;
+    clients->size = 0;
+}
+
 // Global
 node_t node;
 id_cache cache;
@@ -271,6 +283,8 @@ void disconnect_from_network(GtkWindow* parent) {
 	connected = FALSE;
 	gtk_statusbar_push(GTK_STATUSBAR(statusbar), context_id, "Disconnected.");
 	stop_udp_receiver(&node);
+    clear_clients(&known_clients);
+    update_user_list();
 }
 
 void app_on_exit(GtkWidget* widget, gpointer data) { gtk_main_quit(); }
