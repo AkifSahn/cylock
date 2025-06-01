@@ -17,6 +17,7 @@ GtkWidget* text_view;
 GtkWidget* entry;
 GtkWidget* statusbar;
 guint context_id;
+GtkWidget* user_list;
 
 char nickname[64] = "Anonymous";
 gboolean connected = FALSE;
@@ -77,6 +78,27 @@ struct known_clients {
 	uint8_t size;
 } known_clients;
 
+void update_user_list() {
+	GList *children, *iter;
+
+	children = gtk_container_get_children(GTK_CONTAINER(user_list));
+	for (iter = children; iter != NULL; iter = g_list_next(iter)) {
+		gtk_widget_destroy(GTK_WIDGET(iter->data));
+	}
+	g_list_free(children);
+
+	// Now add the users
+	struct client* curr = known_clients.head;
+	while (curr) {
+		GtkWidget* row = gtk_label_new(curr->name);
+		printf("%s\n", curr->name);
+		gtk_widget_set_halign(row, GTK_ALIGN_START);
+		gtk_list_box_insert(GTK_LIST_BOX(user_list), row, -1);
+		curr = curr->next;
+	}
+	gtk_widget_show_all(user_list);
+}
+
 int has_client(struct known_clients* clients, const char name[NAME_LEN]) {
 	struct client* head = clients->head;
 	while (head) {
@@ -89,33 +111,48 @@ int has_client(struct known_clients* clients, const char name[NAME_LEN]) {
 }
 
 void add_new_client(struct known_clients* clients, const char name[NAME_LEN], node_e type) {
+	if (has_client(clients, name)) {
+		// Do not add duplicates
+		return;
+	}
 	struct client* new = (struct client*)malloc(sizeof(struct client));
 	memcpy(new->name, name, NAME_LEN * sizeof(char));
 	new->type = type;
+	new->next = NULL;
+	new->prev = NULL;
 
-	// TODO: check for max client
 	clients->size++;
 	// This is the first client
 	if (!clients->head) {
 		clients->head = new;
 		clients->tail = new;
-		return;
+	} else {
+		new->prev = clients->tail;
+		clients->tail->next = new;
+		clients->tail = new;
 	}
-	new->prev = clients->tail;
-	clients->tail->next = new;
-	clients->tail = new;
+	update_user_list();
 }
 
 void remove_client(struct known_clients* clients, const char name[NAME_LEN]) {
+	printf("remove_client called for name: [%s]\n", name);
 	struct client* head = clients->head;
 	while (head) {
+		printf("Comparing with: [%s]\n", head->name);
 		if (!strcmp(head->name, name)) {
-			if (head->next) head->next->prev = head->prev;
-			if (head->prev) head->prev->next = head->next;
-			if (head == clients->head) clients->head = head->next;
-			if (head == clients->tail) clients->tail = head->prev;
+			if (head->prev) {
+				head->prev->next = head->next;
+			} else {
+				clients->head = head->next; // head is being removed
+			}
+			if (head->next) {
+				head->next->prev = head->prev;
+			} else {
+				clients->tail = head->prev; // tail is being removed
+			}
 			free(head);
 			clients->size--;
+			update_user_list();
 			return;
 		}
 		head = head->next;
@@ -205,6 +242,9 @@ void connect_to_network(GtkWindow* parent) {
 			snprintf(status, sizeof(status), "Connected as %s. Mode: %s", nickname, node_mode);
 			gtk_statusbar_push(GTK_STATUSBAR(statusbar), context_id, status);
 
+			strncpy(node.name, nickname, NAME_LEN);
+			node.name[NAME_LEN - 1] = '\0';
+
 			// Set the node id
 			srand(time(NULL));
 			node.id = rand() % UINT16_MAX;
@@ -212,7 +252,7 @@ void connect_to_network(GtkWindow* parent) {
 			cache_clear(&cache); // Reset the id cache
 			if (start_udp_receiver(&node, RECV_PORT, gui_message_callback) == 0) {
 				// Send a CL_ALIVE message
-                usleep(100);
+				usleep(100);
 				udp_send(NULL, NULL, nickname, node.type, node.id, "192.168.1.255", RECV_PORT, CL_CONNECTED);
 				node.id++;
 			}
@@ -397,13 +437,20 @@ int main(int argc, char* argv[]) {
 
 	gtk_box_pack_start(GTK_BOX(vbox), menubar, FALSE, FALSE, 0);
 
+	//  hbox for chat and user list
+	GtkWidget* hbox_main = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
+	gtk_box_pack_start(GTK_BOX(vbox), hbox_main, TRUE, TRUE, 0);
+
+	// left: Chat VBox
+	GtkWidget* chat_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+
 	// Chat Display (TextView)
 	text_view = gtk_text_view_new();
 	gtk_text_view_set_editable(GTK_TEXT_VIEW(text_view), FALSE);
 	gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(text_view), GTK_WRAP_WORD);
 	GtkWidget* scroll_win = gtk_scrolled_window_new(NULL, NULL);
 	gtk_container_add(GTK_CONTAINER(scroll_win), text_view);
-	gtk_box_pack_start(GTK_BOX(vbox), scroll_win, TRUE, TRUE, 5);
+	gtk_box_pack_start(GTK_BOX(chat_vbox), scroll_win, TRUE, TRUE, 5);
 
 	// Message Entry and Send Button
 	GtkWidget* hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
@@ -411,10 +458,20 @@ int main(int argc, char* argv[]) {
 	gtk_box_pack_start(GTK_BOX(hbox), entry, TRUE, TRUE, 2);
 	GtkWidget* send_btn = gtk_button_new_with_label("Send");
 	gtk_box_pack_start(GTK_BOX(hbox), send_btn, FALSE, FALSE, 2);
-	gtk_box_pack_start(GTK_BOX(vbox), hbox, FALSE, FALSE, 2);
+	gtk_box_pack_start(GTK_BOX(chat_vbox), hbox, FALSE, FALSE, 2);
 
 	g_signal_connect(send_btn, "clicked", G_CALLBACK(send_message), window);
 	g_signal_connect(entry, "activate", G_CALLBACK(send_message), window);
+
+	// Add chat_vbox (left side) to hbox_main
+	gtk_box_pack_start(GTK_BOX(hbox_main), chat_vbox, TRUE, TRUE, 2);
+
+	// right: User list
+	user_list = gtk_list_box_new();
+	gtk_widget_set_size_request(user_list, 180, -1);
+	GtkWidget* user_list_frame = gtk_frame_new("Users");
+	gtk_container_add(GTK_CONTAINER(user_list_frame), user_list);
+	gtk_box_pack_start(GTK_BOX(hbox_main), user_list_frame, FALSE, FALSE, 2);
 
 	// Statusbar
 	statusbar = gtk_statusbar_new();
@@ -423,6 +480,7 @@ int main(int argc, char* argv[]) {
 	gtk_box_pack_start(GTK_BOX(vbox), statusbar, FALSE, FALSE, 0);
 
 	gtk_widget_show_all(window);
+	update_user_list();
 	gtk_main();
 
 	return 0;
