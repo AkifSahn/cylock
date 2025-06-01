@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "libspoof.h"
 
@@ -63,12 +64,89 @@ void cache_clear(id_cache* cache) {
 	cache->i = 0;
 }
 
+struct client {
+	char name[NAME_LEN];
+	node_e type;
+	struct client* next;
+	struct client* prev;
+};
+
+struct known_clients {
+	struct client* head;
+	struct client* tail;
+	uint8_t size;
+} known_clients;
+
+int has_client(struct known_clients* clients, const char name[NAME_LEN]) {
+	struct client* head = clients->head;
+	while (head) {
+		if (!strcmp(head->name, name)) {
+			return 1;
+		}
+		head = head->next;
+	}
+	return 0;
+}
+
+void add_new_client(struct known_clients* clients, const char name[NAME_LEN], node_e type) {
+	struct client* new = (struct client*)malloc(sizeof(struct client));
+	memcpy(new->name, name, NAME_LEN * sizeof(char));
+	new->type = type;
+
+	// TODO: check for max client
+	clients->size++;
+	// This is the first client
+	if (!clients->head) {
+		clients->head = new;
+		clients->tail = new;
+		return;
+	}
+	new->prev = clients->tail;
+	clients->tail->next = new;
+	clients->tail = new;
+}
+
+void remove_client(struct known_clients* clients, const char name[NAME_LEN]) {
+	struct client* head = clients->head;
+	while (head) {
+		if (!strcmp(head->name, name)) {
+			if (head->next) head->next->prev = head->prev;
+			if (head->prev) head->prev->next = head->next;
+			if (head == clients->head) clients->head = head->next;
+			if (head == clients->tail) clients->tail = head->prev;
+			free(head);
+			clients->size--;
+			return;
+		}
+		head = head->next;
+	}
+}
+
 // Global
 node_t node;
 id_cache cache;
 
 // GTK thread-safe message post
 void gui_message_callback(const header_t* header, const char* message, int message_len) {
+	printf("%d\n", header->cl_flags);
+	if (header->cl_flags != 0) {
+		// Parse the flags
+		if (header->cl_flags & CL_CONNECTED) {
+			// Save username to known connections
+			if (!has_client(&known_clients, header->name)) {
+				add_new_client(&known_clients, header->name, header->node_type);
+			}
+			message = "New connection!";
+			message_len = strlen(message);
+		} else if (header->cl_flags & CL_DISCONNECTED) {
+			// Remove username from known conenctions
+			remove_client(&known_clients, header->name);
+			message = "Disconnected!";
+			message_len = strlen(message);
+		} else if (header->cl_flags & CL_ALIVE) {
+		}
+	}
+
 	if (node.type == N_GATEWAY && cache_search(&cache, header->id)) {
 		return;
 	}
@@ -83,10 +161,11 @@ void gui_message_callback(const header_t* header, const char* message, int messa
 		*/
 		cache_add(&cache, header->id);
 		if (header->node_type == N_GATEWAY) {
-			udp_send(message, message_len, header->name, header->node_type, header->id, "255.255.255.255", 6969);
+			udp_send(
+				message, message_len, header->name, header->node_type, header->id, "255.255.255.255", 6969, header->cl_flags);
 		}
 		for (int i = 0; i < num_gw_ips; ++i) {
-			udp_send(message, message_len, header->name, header->node_type, header->id, gateway_ips[i], 6969);
+			udp_send(message, message_len, header->name, header->node_type, header->id, gateway_ips[i], 6969, header->cl_flags);
 		}
 	}
 }
@@ -126,13 +205,16 @@ void connect_to_network(GtkWindow* parent) {
 			snprintf(status, sizeof(status), "Connected as %s. Mode: %s", nickname, node_mode);
 			gtk_statusbar_push(GTK_STATUSBAR(statusbar), context_id, status);
 
-            // Set the node id
-            srand(time(NULL));
-            node.id = rand() % UINT16_MAX;
+			// Set the node id
+			srand(time(NULL));
+			node.id = rand() % UINT16_MAX;
 
 			cache_clear(&cache); // Reset the id cache
 			if (start_udp_receiver(&node, RECV_PORT, gui_message_callback) == 0) {
-				printf("Connected to network!");
+				// Send a CL_ALIVE message
+                usleep(100);
+				udp_send(NULL, NULL, nickname, node.type, node.id, "192.168.1.255", RECV_PORT, CL_CONNECTED);
+				node.id++;
 			}
 		}
 	}
@@ -176,15 +258,15 @@ void send_message(GtkWidget* widget, gpointer data) {
 		// Don't spoof the ip source when sending to other gateways
 		if (node.type == N_GATEWAY) {
 			for (int i = 0; i < num_gw_ips; ++i) {
-				udp_send(msg, strlen(msg), nickname, node.type, node.id, gateway_ips[i], 6969);
+				udp_send(msg, strlen(msg), nickname, node.type, node.id, gateway_ips[i], 6969, 0);
 			}
-			udp_send(msg, strlen(msg), nickname, node.type, node.id, "192.168.1.255", 6969);
+			udp_send(msg, strlen(msg), nickname, node.type, node.id, "192.168.1.255", 6969, 0);
 		} else {
 			// TODO: Use spoofed ip
-			udp_send_raw(msg, strlen(msg), nickname, node.type, node.id, "192.168.1.46", "192.168.1.255", 3131, 6969);
+			udp_send_raw(msg, strlen(msg), nickname, node.type, node.id, "192.168.1.46", "192.168.1.255", 3131, 6969, 0);
 		}
 
-        node.id++;
+		node.id++;
 		gtk_entry_set_text(GTK_ENTRY(entry), "");
 	}
 }
