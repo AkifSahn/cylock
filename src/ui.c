@@ -46,7 +46,7 @@ gboolean show_incoming_message(gpointer data) {
 	return FALSE; // only run once
 }
 
-void update_user_list() {
+gboolean update_user_list(gpointer unused) {
 	GList *children, *iter;
 
 	children = gtk_container_get_children(GTK_CONTAINER(user_list));
@@ -64,6 +64,7 @@ void update_user_list() {
 		curr = curr->next;
 	}
 	gtk_widget_show_all(user_list);
+	return FALSE;
 }
 
 // GTK thread-safe message post
@@ -74,14 +75,14 @@ void gui_message_callback(const header_t* header, const char* message, int messa
 			// Save username to known connections
 			if (!has_client(&known_clients, header->name)) {
 				add_new_client(&known_clients, header->name, header->node_type);
-				update_user_list();
+				g_idle_add((GSourceFunc)update_user_list, NULL);
 			}
 			message = "New connection!";
 			message_len = strlen(message);
 		} else if (header->cl_flags & CL_DISCONNECTED && strcmp(header->name, node.name)) {
 			// Remove username from known conenctions
 			remove_client(&known_clients, header->name);
-			update_user_list();
+			g_idle_add((GSourceFunc)update_user_list, NULL);
 			message = "Disconnected!";
 			message_len = strlen(message);
 		} else if (header->cl_flags & CL_ALIVE) {
@@ -101,12 +102,13 @@ void gui_message_callback(const header_t* header, const char* message, int messa
 		  TODO: can't have more than 1 gw in same subnet with this
 		*/
 		cache_add(&cache, header->id);
-		if (header->node_type == N_GATEWAY) {
-			udp_send(
-				message, message_len, header->name, header->node_type, header->id, "255.255.255.255", 6969, header->cl_flags);
+		if (header->node_type == N_GATEWAY && header->cl_flags & CL_RELAYED) { // Only broadcast to subnet if coming from relay
+			udp_send(message, message_len, header->name, header->node_type, header->id, broadcast_ip, 6969,
+				header->cl_flags ^ CL_RELAYED);
 		}
 		for (int i = 0; i < num_gw_ips; ++i) {
-			udp_send(message, message_len, header->name, header->node_type, header->id, gateway_ips[i], 6969, header->cl_flags);
+			udp_send(message, message_len, header->name, header->node_type, header->id, gateway_ips[i], 6969,
+				header->cl_flags | CL_RELAYED);
 		}
 	}
 }
@@ -174,7 +176,7 @@ void disconnect_from_network(GtkWindow* parent) {
 	gtk_statusbar_push(GTK_STATUSBAR(statusbar), context_id, "Disconnected.");
 	stop_udp_receiver(&node);
 	clear_clients(&known_clients);
-	update_user_list();
+	g_idle_add((GSourceFunc)update_user_list, NULL);
 }
 
 void app_on_exit(GtkWidget* widget, gpointer data) { gtk_main_quit(); }
@@ -202,12 +204,13 @@ void send_message(GtkWidget* widget, gpointer data) {
 		// Don't spoof the ip source when sending to other gateways
 		if (node.type == N_GATEWAY) {
 			for (int i = 0; i < num_gw_ips; ++i) {
-				udp_send(msg, strlen(msg), nickname, node.type, node.id, gateway_ips[i], 6969, 0);
+				udp_send(msg, strlen(msg), nickname, node.type, node.id, gateway_ips[i], 6969, CL_RELAYED);
 			}
 			udp_send(msg, strlen(msg), nickname, node.type, node.id, broadcast_ip, 6969, 0);
 		} else {
 			// TODO: Use spoofed ip
-			udp_send_raw(msg, strlen(msg), nickname, node.type, node.id, local_ip, broadcast_ip, 3131, 6969, 0);
+			// udp_send_raw(msg, strlen(msg), nickname, node.type, node.id, local_ip, broadcast_ip, 3131, 6969, 0);
+            udp_send(msg, strlen(msg), nickname, node.type, node.id, broadcast_ip, 6969, 0);
 		}
 
 		node.id++;
@@ -388,7 +391,7 @@ int main(int argc, char* argv[]) {
 	gtk_box_pack_start(GTK_BOX(vbox), statusbar, FALSE, FALSE, 0);
 
 	gtk_widget_show_all(window);
-	update_user_list();
+	g_idle_add((GSourceFunc)update_user_list, NULL);
 	gtk_main();
 
 	return 0;

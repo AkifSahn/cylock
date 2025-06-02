@@ -30,6 +30,7 @@ enum cl_e {
 	CL_CONNECTED = 0x1, // Newly connected
 	CL_DISCONNECTED = 0x2, // Disconnected
 	CL_ALIVE = 0x4, // Stil alive
+	CL_RELAYED = 0x8, // Indicates that this packet is relayed
 };
 
 typedef struct {
@@ -58,7 +59,7 @@ typedef struct Node {
 // Functions
 void generate_random_ip(char* ip_str);
 
-int get_host_ip_and_broadcast(char *host_ip, size_t host_len, char* broadcast_ip, size_t broad_len);
+int get_host_ip_and_broadcast(char* host_ip, size_t host_len, char* broadcast_ip, size_t broad_len);
 
 int start_udp_receiver(node_t* node, uint16_t listen_port, message_callback_t cb);
 int stop_udp_receiver(node_t* node);
