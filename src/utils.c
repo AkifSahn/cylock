@@ -54,6 +54,7 @@ void add_new_client(ll_clients* clients, const char name[NAME_LEN], node_e type)
 	new->type = type;
 	new->next = NULL;
 	new->prev = NULL;
+	new->last_seen = time(NULL);
 
 	clients->size++;
 	// This is the first client
@@ -66,6 +67,15 @@ void add_new_client(ll_clients* clients, const char name[NAME_LEN], node_e type)
 		clients->tail = new;
 	}
 	// update_user_list();
+}
+
+client* find_client(ll_clients* clients, const char name[NAME_LEN]) {
+	client* curr = clients->head;
+	while (curr) {
+		if (strcmp(curr->name, name) == 0) return curr;
+		curr = curr->next;
+	}
+	return NULL;
 }
 
 void remove_client(ll_clients* clients, const char name[NAME_LEN]) {
@@ -116,27 +126,27 @@ timer_event* new_timer_event(unsigned int u_delay, unsigned int count, void* (*h
 	event->handler = handler;
 	event->handler_arg = handler_arg;
 
-    if (pthread_create(&event->thread, NULL, timer_thread, event) != 0) {
-        free(event);
-        return NULL;
-    }
+	if (pthread_create(&event->thread, NULL, timer_thread, event) != 0) {
+		free(event);
+		return NULL;
+	}
 
 	return event;
 }
 
-void timer_event_stop(timer_event* event){
-    pthread_cancel(event->thread);
-    pthread_join(event->thread, NULL);
-    free(event);
+void timer_event_stop(timer_event* event) {
+	pthread_cancel(event->thread);
+	pthread_join(event->thread, NULL);
+	free(event);
 }
 
 void* timer_thread(void* arg) {
 	timer_event* event = (timer_event*)arg;
 	if (event->count == 0) {
 		while (1) {
-            pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
+			pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
 			event->handler(event->handler_arg);
-            pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
+			pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
 			usleep(event->u_delay);
 		}
 	} else {

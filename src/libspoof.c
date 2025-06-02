@@ -2,10 +2,10 @@
 #include <asm-generic/socket.h>
 #include <assert.h>
 #include <errno.h>
-#include <netinet/ip.h>
 #include <ifaddrs.h>
-#include <netinet/udp.h>
 #include <net/if.h>
+#include <netinet/ip.h>
+#include <netinet/udp.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>

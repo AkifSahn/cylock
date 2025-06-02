@@ -27,6 +27,7 @@ typedef struct client client;
 struct client {
 	char name[NAME_LEN];
 	node_e type;
+	time_t last_seen;
 	client* next;
 	client* prev;
 };
@@ -39,6 +40,7 @@ typedef struct {
 
 int has_client(ll_clients* clients, const char name[NAME_LEN]);
 void add_new_client(ll_clients* clients, const char name[NAME_LEN], node_e type);
+client* find_client(ll_clients* clients, const char name[NAME_LEN]);
 void remove_client(ll_clients* clients, const char name[NAME_LEN]);
 void clear_clients(ll_clients* clients);
 
@@ -50,7 +52,7 @@ typedef struct timer_event {
 	void* (*handler)(void*);
 	void* handler_arg;
 
-    pthread_t thread;
+	pthread_t thread;
 } timer_event;
 
 timer_event* new_timer_event(unsigned int u_delay, unsigned int count, void* (*handler)(void*), void* handler_arg);

@@ -35,6 +35,13 @@ id_cache cache;
 char local_ip[INET_ADDRSTRLEN];
 char broadcast_ip[INET_ADDRSTRLEN];
 
+// in microsecond
+#define NOTIFY_EVENT_TIMER 10000000
+// In microsecond
+#define PRUNE_EVENT_TIMER 60000000
+// in second
+#define PRUNE_STALE_CLIENT_DELAY 120
+
 // This function runs on the GTK main thread to update the chat window
 gboolean show_incoming_message(gpointer data) {
 	const char* msg = (const char*)data;
@@ -87,8 +94,14 @@ void gui_message_callback(const header_t* header, const char* message, int messa
 			message = "Disconnected!";
 			message_len = strlen(message);
 		} else if (header->cl_flags & CL_ALIVE) {
-            printf("%s is still awake\n", header->name);
-            return;
+			client* c = find_client(&known_clients, header->name);
+			if (c) {
+				c->last_seen = time(NULL);
+			} else {
+				add_new_client(&known_clients, header->name, header->node_type);
+				g_idle_add((GSourceFunc)update_user_list, NULL);
+			}
+			return;
 		}
 	}
 
@@ -128,7 +141,26 @@ void* timer_awake(void* arg) {
 	node_t* node = (node_t*)arg;
 	udp_send(NULL, NULL, node->name, node->type, atomic_fetch_add(&node->id, 1), broadcast_ip, RECV_PORT, CL_ALIVE);
 	return NULL;
-};
+}
+
+// TODO: add thread safety for known_clients!! Race condition may occur!
+timer_event* prune_event;
+void* prune_stale_clients(void* arg) {
+	time_t now = time(NULL);
+	struct client* curr = known_clients.head;
+	int updated = 0;
+	while (curr) {
+		struct client* next = curr->next; // Save next pointer as curr may be deleted
+		if (difftime(now, curr->last_seen) > PRUNE_STALE_CLIENT_DELAY) {
+			printf("Removing inactive client: %s\n", curr->name);
+			remove_client(&known_clients, curr->name);
+			updated = 1;
+		}
+		curr = next;
+	}
+	if (updated) g_idle_add((GSourceFunc)update_user_list, NULL); // Thread-safe GUI update
+	return NULL;
+}
 
 void connect_to_network(GtkWindow* parent) {
 	if (connected) {
@@ -166,7 +198,8 @@ void connect_to_network(GtkWindow* parent) {
 			cache_clear(&cache); // Reset the id cache
 			if (start_udp_receiver(&node, RECV_PORT, gui_message_callback) == 0) {
 				// Send a CL_CONNECTED message
-				awake_event = new_timer_event(10000000, 0, timer_awake, &node);
+				awake_event = new_timer_event(NOTIFY_EVENT_TIMER, 0, timer_awake, &node);
+				prune_event = new_timer_event(PRUNE_EVENT_TIMER, 0, prune_stale_clients, NULL);
 				usleep(100);
 				udp_send(NULL, NULL, nickname, node.type, atomic_fetch_add(&node.id, 1), broadcast_ip, RECV_PORT, CL_CONNECTED);
 			}
@@ -185,8 +218,8 @@ void disconnect_from_network(GtkWindow* parent) {
 	connected = FALSE;
 	gtk_statusbar_push(GTK_STATUSBAR(statusbar), context_id, "Disconnected.");
 	stop_udp_receiver(&node);
-    timer_event_stop(awake_event);
-    awake_event = NULL;
+	timer_event_stop(awake_event);
+	awake_event = NULL;
 	clear_clients(&known_clients);
 	g_idle_add((GSourceFunc)update_user_list, NULL);
 }
@@ -215,7 +248,7 @@ void send_message(GtkWidget* widget, gpointer data) {
 		// If gateway, send the message to the other gateways on the gateway_ips.txt list.
 		// Don't spoof the ip source when sending to other gateways
 		if (node.type == N_GATEWAY) {
-            uint16_t id = atomic_fetch_add(&node.id, 1);
+			uint16_t id = atomic_fetch_add(&node.id, 1);
 			for (int i = 0; i < num_gw_ips; ++i) {
 				udp_send(msg, strlen(msg), nickname, node.type, id, gateway_ips[i], 6969, CL_RELAYED);
 			}
