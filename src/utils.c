@@ -1,8 +1,10 @@
 #include "utils.h"
+#include <bits/types.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-
+#include <unistd.h>
 
 // --- ID Cache ---
 
@@ -90,15 +92,61 @@ void remove_client(ll_clients* clients, const char name[NAME_LEN]) {
 }
 
 void clear_clients(ll_clients* clients) {
-    struct client* curr = clients->head;
-    while (curr) {
-        struct client* next = curr->next;
-        free(curr);
-        curr = next;
+	struct client* curr = clients->head;
+	while (curr) {
+		struct client* next = curr->next;
+		free(curr);
+		curr = next;
+	}
+	clients->head = NULL;
+	clients->tail = NULL;
+	clients->size = 0;
+}
+
+// --- ### ---
+
+// --- Timer events ---
+
+// Initiates and starts a new timer event.
+// TODO: Add cleanup functions.
+timer_event* new_timer_event(unsigned int u_delay, unsigned int count, void* (*handler)(void*), void* handler_arg) {
+	timer_event* event = (timer_event*)malloc(sizeof(timer_event));
+	event->u_delay = u_delay;
+	event->count = count;
+	event->handler = handler;
+	event->handler_arg = handler_arg;
+
+    if (pthread_create(&event->thread, NULL, timer_thread, event) != 0) {
+        free(event);
+        return NULL;
     }
-    clients->head = NULL;
-    clients->tail = NULL;
-    clients->size = 0;
+
+	return event;
+}
+
+void timer_event_stop(timer_event* event){
+    pthread_cancel(event->thread);
+    pthread_join(event->thread, NULL);
+    free(event);
+}
+
+void* timer_thread(void* arg) {
+	timer_event* event = (timer_event*)arg;
+	if (event->count == 0) {
+		while (1) {
+            pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
+			event->handler(event->handler_arg);
+            pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
+			usleep(event->u_delay);
+		}
+	} else {
+		while (event->count > 0) {
+			event->handler(event->handler_arg);
+			event->count--;
+			usleep(event->u_delay);
+		}
+	}
+	return NULL;
 }
 
 // --- ### ---

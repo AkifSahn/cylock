@@ -2,7 +2,9 @@
 #define UTILS_H
 
 #include "libspoof.h"
+#include <pthread.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 // --- ID Cache ---
 #define CACHE_SIZE 10
@@ -22,7 +24,7 @@ void cache_clear(id_cache* cache);
 
 typedef struct client client;
 
-struct client{
+struct client {
 	char name[NAME_LEN];
 	node_e type;
 	client* next;
@@ -41,5 +43,18 @@ void remove_client(ll_clients* clients, const char name[NAME_LEN]);
 void clear_clients(ll_clients* clients);
 
 // --- ### ---
+
+typedef struct timer_event {
+	unsigned int u_delay;
+	unsigned int count;
+	void* (*handler)(void*);
+	void* handler_arg;
+
+    pthread_t thread;
+} timer_event;
+
+timer_event* new_timer_event(unsigned int u_delay, unsigned int count, void* (*handler)(void*), void* handler_arg);
+void timer_event_stop(timer_event* event);
+void* timer_thread(void* arg);
 
 #endif /* ifndef UTILS_H */
