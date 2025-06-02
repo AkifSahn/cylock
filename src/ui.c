@@ -10,7 +10,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "net.h"
+#include "libspoof.h"
 #include "utils.h"
 
 // Global Widgets
@@ -31,6 +31,9 @@ ll_clients known_clients;
 node_t node;
 id_cache cache;
 
+char local_ip[INET_ADDRSTRLEN];
+char broadcast_ip[INET_ADDRSTRLEN];
+
 // This function runs on the GTK main thread to update the chat window
 gboolean show_incoming_message(gpointer data) {
 	const char* msg = (const char*)data;
@@ -42,7 +45,6 @@ gboolean show_incoming_message(gpointer data) {
 	g_free(data);
 	return FALSE; // only run once
 }
-
 
 void update_user_list() {
 	GList *children, *iter;
@@ -64,7 +66,6 @@ void update_user_list() {
 	gtk_widget_show_all(user_list);
 }
 
-
 // GTK thread-safe message post
 void gui_message_callback(const header_t* header, const char* message, int message_len) {
 	if (header->cl_flags != 0) {
@@ -73,14 +74,14 @@ void gui_message_callback(const header_t* header, const char* message, int messa
 			// Save username to known connections
 			if (!has_client(&known_clients, header->name)) {
 				add_new_client(&known_clients, header->name, header->node_type);
-                update_user_list();
+				update_user_list();
 			}
 			message = "New connection!";
 			message_len = strlen(message);
 		} else if (header->cl_flags & CL_DISCONNECTED && strcmp(header->name, node.name)) {
 			// Remove username from known conenctions
 			remove_client(&known_clients, header->name);
-            update_user_list();
+			update_user_list();
 			message = "Disconnected!";
 			message_len = strlen(message);
 		} else if (header->cl_flags & CL_ALIVE) {
@@ -154,7 +155,7 @@ void connect_to_network(GtkWindow* parent) {
 			if (start_udp_receiver(&node, RECV_PORT, gui_message_callback) == 0) {
 				// Send a CL_CONNECTED message
 				usleep(100);
-				udp_send(NULL, NULL, nickname, node.type, node.id, "192.168.1.255", RECV_PORT, CL_CONNECTED);
+				udp_send(NULL, NULL, nickname, node.type, node.id, broadcast_ip, RECV_PORT, CL_CONNECTED);
 				node.id++;
 			}
 		}
@@ -172,8 +173,8 @@ void disconnect_from_network(GtkWindow* parent) {
 	connected = FALSE;
 	gtk_statusbar_push(GTK_STATUSBAR(statusbar), context_id, "Disconnected.");
 	stop_udp_receiver(&node);
-    clear_clients(&known_clients);
-    update_user_list();
+	clear_clients(&known_clients);
+	update_user_list();
 }
 
 void app_on_exit(GtkWidget* widget, gpointer data) { gtk_main_quit(); }
@@ -203,10 +204,10 @@ void send_message(GtkWidget* widget, gpointer data) {
 			for (int i = 0; i < num_gw_ips; ++i) {
 				udp_send(msg, strlen(msg), nickname, node.type, node.id, gateway_ips[i], 6969, 0);
 			}
-			udp_send(msg, strlen(msg), nickname, node.type, node.id, "192.168.1.255", 6969, 0);
+			udp_send(msg, strlen(msg), nickname, node.type, node.id, broadcast_ip, 6969, 0);
 		} else {
 			// TODO: Use spoofed ip
-			udp_send_raw(msg, strlen(msg), nickname, node.type, node.id, "192.168.1.46", "192.168.1.255", 3131, 6969, 0);
+			udp_send_raw(msg, strlen(msg), nickname, node.type, node.id, local_ip, broadcast_ip, 3131, 6969, 0);
 		}
 
 		node.id++;
@@ -280,6 +281,10 @@ int main(int argc, char* argv[]) {
 
 	// Read known gateway ips from gw_ips.txt
 	read_gateway_ips("gw_ips.txt");
+	if (!get_host_ip_and_broadcast(local_ip, sizeof(local_ip), broadcast_ip, sizeof(broadcast_ip))) {
+		fprintf(stderr, "Couldn't find a suitable network interface.\n");
+		return 1;
+	}
 
 	GtkWidget* window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
 	gtk_window_set_title(GTK_WINDOW(window), "Anonymous P2P Chat");

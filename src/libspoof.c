@@ -3,7 +3,9 @@
 #include <assert.h>
 #include <errno.h>
 #include <netinet/ip.h>
+#include <ifaddrs.h>
 #include <netinet/udp.h>
+#include <net/if.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,7 +16,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "net.h"
+#include "libspoof.h"
 
 #define PCKT_LEN 8192 // Buffer length. Note - This isn't how much data we're actually sending.
 
@@ -39,6 +41,39 @@ void generate_random_ip(char* ip_str) {
 	int oct3 = rand() % 256;
 	int oct4 = rand() % 256;
 	sprintf(ip_str, "%d.%d.%d.%d", oct1, oct2, oct3, oct4);
+}
+
+int get_host_ip_and_broadcast(char* host_ip, size_t host_len, char* broadcast_ip, size_t broad_len) {
+	struct ifaddrs *ifaddr, *ifa;
+	int found = 0;
+	if (getifaddrs(&ifaddr) == -1) {
+		perror("getifaddrs");
+		return 0;
+	}
+
+	for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+		if (!ifa->ifa_addr) continue;
+		if (ifa->ifa_addr->sa_family == AF_INET) {
+			// Skip loopback and interfaces that are down
+			if ((ifa->ifa_flags & IFF_LOOPBACK) || !(ifa->ifa_flags & IFF_UP)) continue;
+			struct sockaddr_in* sa = (struct sockaddr_in*)ifa->ifa_addr;
+			struct sockaddr_in* netmask = (struct sockaddr_in*)ifa->ifa_netmask;
+			struct in_addr ip = sa->sin_addr;
+			struct in_addr mask = netmask->sin_addr;
+			struct in_addr broadcast;
+			broadcast.s_addr = (ip.s_addr & mask.s_addr) | (~mask.s_addr);
+
+			// Write IP and broadcast addresses as strings
+			inet_ntop(AF_INET, &ip, host_ip, host_len);
+			inet_ntop(AF_INET, &broadcast, broadcast_ip, broad_len);
+			found = 1;
+			break;
+		}
+	}
+	freeifaddrs(ifaddr);
+	return found;
+
+	return 0;
 }
 
 void* udp_receive_thread(void* arg) {
@@ -94,8 +129,8 @@ int start_udp_receiver(node_t* node, uint16_t listen_port, message_callback_t cb
 int stop_udp_receiver(node_t* node) {
 	node->recv_running = 0;
 	// Optionally, send a dummy datagram to self to unblock recvfrom if needed
-    udp_send(NULL, NULL, node->name, node->type, node->id, "192.168.1.255", RECV_PORT, CL_DISCONNECTED);;
-    if (!node->recv_running) return 0;
+	udp_send(NULL, NULL, node->name, node->type, node->id, "255.255.255.255", RECV_PORT, CL_DISCONNECTED);
+	if (!node->recv_running) return 0;
 	pthread_join(node->recv_thread, NULL);
 	node->sock_listen = -1;
 	return 0;

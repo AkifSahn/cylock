@@ -1,9 +1,10 @@
-// net.h
-#ifndef NET_H
-#define NET_H
+// libspoof.h
+#ifndef LIBSPOOF_H
+#define LIBSPOOF_H
 
 #include <netinet/in.h>
 #include <pthread.h>
+#include <stddef.h>
 #include <stdint.h>
 
 typedef enum {
@@ -56,6 +57,8 @@ typedef struct Node {
 
 // Functions
 void generate_random_ip(char* ip_str);
+
+int get_host_ip_and_broadcast(char *host_ip, size_t host_len, char* broadcast_ip, size_t broad_len);
 
 int start_udp_receiver(node_t* node, uint16_t listen_port, message_callback_t cb);
 int stop_udp_receiver(node_t* node);
