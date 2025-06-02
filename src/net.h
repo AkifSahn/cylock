@@ -1,6 +1,6 @@
-// libspoof.h
-#ifndef LIBSPOOF_H
-#define LIBSPOOF_H
+// net.h
+#ifndef NET_H
+#define NET_H
 
 #include <netinet/in.h>
 #include <pthread.h>

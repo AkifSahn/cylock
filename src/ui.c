@@ -10,7 +10,8 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "libspoof.h"
+#include "net.h"
+#include "utils.h"
 
 // Global Widgets
 GtkWidget* text_view;
@@ -26,6 +27,10 @@ char node_mode[16] = "Client";
 int num_gw_ips = 0;
 char (*gateway_ips)[INET_ADDRSTRLEN];
 
+ll_clients known_clients;
+node_t node;
+id_cache cache;
+
 // This function runs on the GTK main thread to update the chat window
 gboolean show_incoming_message(gpointer data) {
 	const char* msg = (const char*)data;
@@ -38,45 +43,6 @@ gboolean show_incoming_message(gpointer data) {
 	return FALSE; // only run once
 }
 
-#define CACHE_SIZE 10
-typedef struct id_cache {
-	uint8_t i;
-	uint16_t cache[CACHE_SIZE];
-} id_cache;
-
-void cache_add(id_cache* cache, uint16_t e) {
-	if (cache->i >= CACHE_SIZE - 1) // rewind back
-		cache->i = 0;
-
-	cache->cache[cache->i++] = e;
-}
-
-int cache_search(const id_cache* cache, uint16_t e) {
-	for (int i = 0; i < CACHE_SIZE; ++i) {
-		if (cache->cache[i] == e) {
-			return 1;
-		}
-	}
-	return 0;
-}
-
-void cache_clear(id_cache* cache) {
-	memset(cache->cache, 0, CACHE_SIZE * sizeof(uint16_t));
-	cache->i = 0;
-}
-
-struct client {
-	char name[NAME_LEN];
-	node_e type;
-	struct client* next;
-	struct client* prev;
-};
-
-struct known_clients {
-	struct client* head;
-	struct client* tail;
-	uint8_t size;
-} known_clients;
 
 void update_user_list() {
 	GList *children, *iter;
@@ -91,7 +57,6 @@ void update_user_list() {
 	struct client* curr = known_clients.head;
 	while (curr) {
 		GtkWidget* row = gtk_label_new(curr->name);
-		printf("%s\n", curr->name);
 		gtk_widget_set_halign(row, GTK_ALIGN_START);
 		gtk_list_box_insert(GTK_LIST_BOX(user_list), row, -1);
 		curr = curr->next;
@@ -99,97 +64,23 @@ void update_user_list() {
 	gtk_widget_show_all(user_list);
 }
 
-int has_client(struct known_clients* clients, const char name[NAME_LEN]) {
-	struct client* head = clients->head;
-	while (head) {
-		if (!strcmp(head->name, name)) {
-			return 1;
-		}
-		head = head->next;
-	}
-	return 0;
-}
-
-void add_new_client(struct known_clients* clients, const char name[NAME_LEN], node_e type) {
-	if (has_client(clients, name)) {
-		// Do not add duplicates
-		return;
-	}
-	struct client* new = (struct client*)malloc(sizeof(struct client));
-	memcpy(new->name, name, NAME_LEN * sizeof(char));
-	new->type = type;
-	new->next = NULL;
-	new->prev = NULL;
-
-	clients->size++;
-	// This is the first client
-	if (!clients->head) {
-		clients->head = new;
-		clients->tail = new;
-	} else {
-		new->prev = clients->tail;
-		clients->tail->next = new;
-		clients->tail = new;
-	}
-	update_user_list();
-}
-
-void remove_client(struct known_clients* clients, const char name[NAME_LEN]) {
-	printf("remove_client called for name: [%s]\n", name);
-	struct client* head = clients->head;
-	while (head) {
-		printf("Comparing with: [%s]\n", head->name);
-		if (!strcmp(head->name, name)) {
-			if (head->prev) {
-				head->prev->next = head->next;
-			} else {
-				clients->head = head->next; // head is being removed
-			}
-			if (head->next) {
-				head->next->prev = head->prev;
-			} else {
-				clients->tail = head->prev; // tail is being removed
-			}
-			free(head);
-			clients->size--;
-			update_user_list();
-			return;
-		}
-		head = head->next;
-	}
-}
-
-void clear_clients(struct known_clients* clients) {
-    struct client* curr = clients->head;
-    while (curr) {
-        struct client* next = curr->next;
-        free(curr);
-        curr = next;
-    }
-    clients->head = NULL;
-    clients->tail = NULL;
-    clients->size = 0;
-}
-
-// Global
-node_t node;
-id_cache cache;
 
 // GTK thread-safe message post
 void gui_message_callback(const header_t* header, const char* message, int message_len) {
-	printf("%d\n", header->cl_flags);
 	if (header->cl_flags != 0) {
 		// Parse the flags
 		if (header->cl_flags & CL_CONNECTED) {
 			// Save username to known connections
 			if (!has_client(&known_clients, header->name)) {
 				add_new_client(&known_clients, header->name, header->node_type);
+                update_user_list();
 			}
 			message = "New connection!";
 			message_len = strlen(message);
-		} else if (header->cl_flags & CL_DISCONNECTED) {
+		} else if (header->cl_flags & CL_DISCONNECTED && strcmp(header->name, node.name)) {
 			// Remove username from known conenctions
 			remove_client(&known_clients, header->name);
+            update_user_list();
 			message = "Disconnected!";
 			message_len = strlen(message);
 		} else if (header->cl_flags & CL_ALIVE) {
@@ -219,9 +110,7 @@ void gui_message_callback(const header_t* header, const char* message, int messa
 	}
 }
 
-// Placeholder: Call your networking C functions here!
 void generate_keys() {
-	// Implement your logic (maybe call your real C functions here)
 	GtkWidget* dialog
 		= gtk_message_dialog_new(NULL, GTK_DIALOG_MODAL, GTK_MESSAGE_INFO, GTK_BUTTONS_OK, "Key pair generated (dummy action).");
 	gtk_dialog_run(GTK_DIALOG(dialog));
@@ -263,7 +152,7 @@ void connect_to_network(GtkWindow* parent) {
 
 			cache_clear(&cache); // Reset the id cache
 			if (start_udp_receiver(&node, RECV_PORT, gui_message_callback) == 0) {
-				// Send a CL_ALIVE message
+				// Send a CL_CONNECTED message
 				usleep(100);
 				udp_send(NULL, NULL, nickname, node.type, node.id, "192.168.1.255", RECV_PORT, CL_CONNECTED);
 				node.id++;

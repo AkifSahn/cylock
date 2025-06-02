@@ -14,7 +14,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "libspoof.h"
+#include "net.h"
 
 #define PCKT_LEN 8192 // Buffer length. Note - This isn't how much data we're actually sending.
 
