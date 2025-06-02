@@ -4,6 +4,7 @@
 
 #include <netinet/in.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -49,7 +50,7 @@ typedef void (*message_callback_t)(const header_t* header, const char* message, 
 typedef struct Node {
 	char name[NAME_LEN];
 	node_e type;
-	uint16_t id;
+	atomic_uint_fast16_t id;
 	int sock_listen;
 	pthread_t recv_thread;
 	int recv_running;

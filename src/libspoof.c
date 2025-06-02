@@ -129,7 +129,7 @@ int start_udp_receiver(node_t* node, uint16_t listen_port, message_callback_t cb
 int stop_udp_receiver(node_t* node) {
 	node->recv_running = 0;
 	// Optionally, send a dummy datagram to self to unblock recvfrom if needed
-	udp_send(NULL, NULL, node->name, node->type, node->id, "255.255.255.255", RECV_PORT, CL_DISCONNECTED);
+	udp_send(NULL, NULL, node->name, node->type, atomic_load(&node->id), "255.255.255.255", RECV_PORT, CL_DISCONNECTED);
 	if (!node->recv_running) return 0;
 	pthread_join(node->recv_thread, NULL);
 	node->sock_listen = -1;

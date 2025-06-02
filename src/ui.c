@@ -3,6 +3,7 @@
 #include <gtk/gtk.h>
 #include <netinet/in.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -86,6 +87,8 @@ void gui_message_callback(const header_t* header, const char* message, int messa
 			message = "Disconnected!";
 			message_len = strlen(message);
 		} else if (header->cl_flags & CL_ALIVE) {
+            printf("%s is still awake\n", header->name);
+            return;
 		}
 	}
 
@@ -120,6 +123,13 @@ void generate_keys() {
 	gtk_widget_destroy(dialog);
 }
 
+timer_event* awake_event;
+void* timer_awake(void* arg) {
+	node_t* node = (node_t*)arg;
+	udp_send(NULL, NULL, node->name, node->type, atomic_fetch_add(&node->id, 1), broadcast_ip, RECV_PORT, CL_ALIVE);
+	return NULL;
+};
+
 void connect_to_network(GtkWindow* parent) {
 	if (connected) {
 		GtkWidget* dialog
@@ -151,14 +161,14 @@ void connect_to_network(GtkWindow* parent) {
 
 			// Set the node id
 			srand(time(NULL));
-			node.id = rand() % UINT16_MAX;
+			atomic_store(&node.id, rand() % UINT16_MAX);
 
 			cache_clear(&cache); // Reset the id cache
 			if (start_udp_receiver(&node, RECV_PORT, gui_message_callback) == 0) {
 				// Send a CL_CONNECTED message
+				awake_event = new_timer_event(10000000, 0, timer_awake, &node);
 				usleep(100);
-				udp_send(NULL, NULL, nickname, node.type, node.id, broadcast_ip, RECV_PORT, CL_CONNECTED);
-				node.id++;
+				udp_send(NULL, NULL, nickname, node.type, atomic_fetch_add(&node.id, 1), broadcast_ip, RECV_PORT, CL_CONNECTED);
 			}
 		}
 	}
@@ -175,6 +185,8 @@ void disconnect_from_network(GtkWindow* parent) {
 	connected = FALSE;
 	gtk_statusbar_push(GTK_STATUSBAR(statusbar), context_id, "Disconnected.");
 	stop_udp_receiver(&node);
+    timer_event_stop(awake_event);
+    awake_event = NULL;
 	clear_clients(&known_clients);
 	g_idle_add((GSourceFunc)update_user_list, NULL);
 }
@@ -203,17 +215,17 @@ void send_message(GtkWidget* widget, gpointer data) {
 		// If gateway, send the message to the other gateways on the gateway_ips.txt list.
 		// Don't spoof the ip source when sending to other gateways
 		if (node.type == N_GATEWAY) {
+            uint16_t id = atomic_fetch_add(&node.id, 1);
 			for (int i = 0; i < num_gw_ips; ++i) {
-				udp_send(msg, strlen(msg), nickname, node.type, node.id, gateway_ips[i], 6969, CL_RELAYED);
+				udp_send(msg, strlen(msg), nickname, node.type, id, gateway_ips[i], 6969, CL_RELAYED);
 			}
-			udp_send(msg, strlen(msg), nickname, node.type, node.id, broadcast_ip, 6969, 0);
+			udp_send(msg, strlen(msg), nickname, node.type, id, broadcast_ip, 6969, 0);
 		} else {
 			// TODO: Use spoofed ip
 			// udp_send_raw(msg, strlen(msg), nickname, node.type, node.id, local_ip, broadcast_ip, 3131, 6969, 0);
-            udp_send(msg, strlen(msg), nickname, node.type, node.id, broadcast_ip, 6969, 0);
+			udp_send(msg, strlen(msg), nickname, node.type, atomic_fetch_add(&node.id, 1), broadcast_ip, 6969, 0);
 		}
 
-		node.id++;
 		gtk_entry_set_text(GTK_ENTRY(entry), "");
 	}
 }
