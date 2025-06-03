@@ -7,8 +7,10 @@
 #include <openssl/pem.h>
 #include <openssl/rsa.h>
 
+#include <openssl/types.h>
 #include <pthread.h>
 #include <stdint.h>
+#include <sys/types.h>
 
 // --- ID Cache ---
 #define CACHE_SIZE 10
@@ -70,6 +72,17 @@ void* timer_thread(void* arg);
 // --- ### ---
 
 // --- Crypto ---
+
+#define AES_KEYLEN 32 // 256 bits
+
+int encrypt_aes(const unsigned char* plaintext, int plaintext_len, const unsigned char* key, const unsigned char* iv,
+	unsigned char* ciphertext);
+int decrypt_aes(const unsigned char* ciphertext, int ciperhtext_len, const unsigned char* key, const unsigned char* iv,
+	unsigned char* plaintext);
+
+int encrypt_key_with_rsa(EVP_PKEY* pubkey, const unsigned char* aes_key, int keylen, unsigned char* encrypted_key);
+int decrypt_key_with_rsa(EVP_PKEY* privkey, const unsigned char* encrypted_key, int encrypted_keylen,
+	unsigned char* decrypted_key, int decrypted_keylen);
 
 int node_generate_rsa_keypair(node_t* node);
 
