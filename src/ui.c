@@ -2,6 +2,7 @@
 #include <glib.h>
 #include <gtk/gtk.h>
 #include <netinet/in.h>
+#include <openssl/rsa.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -82,7 +83,8 @@ void gui_message_callback(const header_t* header, const char* message, int messa
 		if (header->cl_flags & CL_CONNECTED) {
 			// Save username to known connections
 			if (!has_client(&known_clients, header->name)) {
-				add_new_client(&known_clients, header->name, header->node_type);
+				// message is public key PEM string
+				add_new_client(&known_clients, header->name, header->node_type, message);
 				g_idle_add((GSourceFunc)update_user_list, NULL);
 			}
 			message = "New connection!";
@@ -98,7 +100,7 @@ void gui_message_callback(const header_t* header, const char* message, int messa
 			if (c) {
 				c->last_seen = time(NULL);
 			} else {
-				add_new_client(&known_clients, header->name, header->node_type);
+				add_new_client(&known_clients, header->name, header->node_type, message);
 				g_idle_add((GSourceFunc)update_user_list, NULL);
 			}
 			return;
@@ -191,9 +193,15 @@ void connect_to_network(GtkWindow* parent) {
 			strncpy(node.name, nickname, NAME_LEN);
 			node.name[NAME_LEN - 1] = '\0';
 
-			// Set the node id
+			// Set the node id and generate keypair
 			srand(time(NULL));
 			atomic_store(&node.id, rand() % UINT16_MAX);
+
+			if (node.rsa_keypair) RSA_free(node.rsa_keypair);
+			if (node.pubkey_pem) free(node.pubkey_pem);
+            node.rsa_keypair = NULL;
+            node.pubkey_pem = NULL;
+			node_generate_rsa_keypair(&node);
 
 			cache_clear(&cache); // Reset the id cache
 			if (start_udp_receiver(&node, RECV_PORT, gui_message_callback) == 0) {
@@ -201,7 +209,8 @@ void connect_to_network(GtkWindow* parent) {
 				awake_event = new_timer_event(NOTIFY_EVENT_TIMER, 0, timer_awake, &node);
 				prune_event = new_timer_event(PRUNE_EVENT_TIMER, 0, prune_stale_clients, NULL);
 				usleep(100);
-				udp_send(NULL, NULL, nickname, node.type, atomic_fetch_add(&node.id, 1), broadcast_ip, RECV_PORT, CL_CONNECTED);
+				udp_send(node.pubkey_pem, strlen(node.pubkey_pem), nickname, node.type, atomic_fetch_add(&node.id, 1),
+					broadcast_ip, RECV_PORT, CL_CONNECTED);
 			}
 		}
 	}
@@ -218,8 +227,17 @@ void disconnect_from_network(GtkWindow* parent) {
 	connected = FALSE;
 	gtk_statusbar_push(GTK_STATUSBAR(statusbar), context_id, "Disconnected.");
 	stop_udp_receiver(&node);
+
 	timer_event_stop(awake_event);
+	timer_event_stop(prune_event);
 	awake_event = NULL;
+	prune_event = NULL;
+
+	if (node.rsa_keypair) RSA_free(node.rsa_keypair);
+	if (node.pubkey_pem) free(node.pubkey_pem);
+    node.rsa_keypair = NULL;
+    node.pubkey_pem = NULL;
+
 	clear_clients(&known_clients);
 	g_idle_add((GSourceFunc)update_user_list, NULL);
 }

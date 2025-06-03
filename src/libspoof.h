@@ -3,6 +3,7 @@
 #define LIBSPOOF_H
 
 #include <netinet/in.h>
+#include <openssl/types.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stddef.h>
@@ -55,6 +56,9 @@ typedef struct Node {
 	pthread_t recv_thread;
 	int recv_running;
 	message_callback_t on_message; // function pointer for callback
+
+	RSA* rsa_keypair;
+	char* pubkey_pem;
 } node_t;
 
 // Functions

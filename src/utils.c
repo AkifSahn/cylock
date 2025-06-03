@@ -44,7 +44,7 @@ int has_client(ll_clients* clients, const char name[NAME_LEN]) {
 	return 0;
 }
 
-void add_new_client(ll_clients* clients, const char name[NAME_LEN], node_e type) {
+void add_new_client(ll_clients* clients, const char name[NAME_LEN], node_e type, const char* pubkey_pem) {
 	if (has_client(clients, name)) {
 		// Do not add duplicates
 		return;
@@ -55,6 +55,8 @@ void add_new_client(ll_clients* clients, const char name[NAME_LEN], node_e type)
 	new->next = NULL;
 	new->prev = NULL;
 	new->last_seen = time(NULL);
+    new->pubkey_pem = pubkey_pem ? strdup(pubkey_pem) : NULL;
+    new->pubkey = NULL;
 
 	clients->size++;
 	// This is the first client
@@ -157,6 +159,26 @@ void* timer_thread(void* arg) {
 		}
 	}
 	return NULL;
+}
+
+// --- ### ---
+
+// --- Crypto ---
+
+// TODO: replace deprecated functions
+int node_generate_rsa_keypair(node_t* node) {
+	node->rsa_keypair = RSA_generate_key(2048, RSA_F4, NULL, NULL);
+	if (!node->rsa_keypair) return 0;
+
+	BIO* mem = BIO_new(BIO_s_mem());
+	PEM_write_bio_RSA_PUBKEY(mem, node->rsa_keypair);
+	size_t pub_len = BIO_pending(mem);
+	node->pubkey_pem = malloc(pub_len + 1);
+	BIO_read(mem, node->pubkey_pem, pub_len);
+	node->pubkey_pem[pub_len] = '\0';
+	BIO_free(mem);
+
+    return 1;
 }
 
 // --- ### ---
