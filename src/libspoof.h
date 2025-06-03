@@ -43,6 +43,7 @@ typedef struct {
 	uint16_t id; // Packet ID
 	uint16_t frag_num; // Fragmentation number
 	uint16_t total_fragments; // Total number of fragments
+	uint8_t num_key; // How many encrypted AES keys in the payload
 } header_t;
 
 typedef void (*message_callback_t)(const header_t* header, const char* message, int message_len);
@@ -57,7 +58,7 @@ typedef struct Node {
 	int recv_running;
 	message_callback_t on_message; // function pointer for callback
 
-	RSA* rsa_keypair;
+	EVP_PKEY* keypair;
 	char* pubkey_pem;
 } node_t;
 

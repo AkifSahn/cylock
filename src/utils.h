@@ -35,7 +35,7 @@ struct client {
 	node_e type;
 	time_t last_seen;
 	char* pubkey_pem;
-	RSA* pubkey;
+	EVP_PKEY* pubkey;
 	client* next;
 	client* prev;
 };
@@ -85,6 +85,8 @@ int decrypt_key_with_rsa(EVP_PKEY* privkey, const unsigned char* encrypted_key, 
 	unsigned char* decrypted_key, int decrypted_keylen);
 
 int node_generate_rsa_keypair(node_t* node);
+
+EVP_PKEY* peer_pubkey_from_pem(const char* pubkey_pem);
 
 // --- ### ---
 

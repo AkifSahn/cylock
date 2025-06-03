@@ -1,5 +1,8 @@
 #include "utils.h"
 #include <bits/types.h>
+#include <openssl/bio.h>
+#include <openssl/evp.h>
+#include <openssl/pem.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -58,6 +61,19 @@ void add_new_client(ll_clients* clients, const char name[NAME_LEN], node_e type,
 	new->pubkey_pem = pubkey_pem ? strdup(pubkey_pem) : NULL;
 	new->pubkey = NULL;
 
+	if (pubkey_pem) {
+		BIO* mem = BIO_new_mem_buf(pubkey_pem, -1);
+		if (mem) {
+			new->pubkey = PEM_read_bio_PUBKEY(mem, NULL, NULL, NULL);
+			BIO_free(mem);
+		}
+		if (!new->pubkey) {
+			free(new->pubkey_pem);
+			free(new);
+			return;
+		}
+	}
+
 	clients->size++;
 	// This is the first client
 	if (!clients->head) {
@@ -94,7 +110,11 @@ void remove_client(ll_clients* clients, const char name[NAME_LEN]) {
 			} else {
 				clients->tail = head->prev; // tail is being removed
 			}
+
+			if (head->pubkey) EVP_PKEY_free(head->pubkey);
+			if (head->pubkey_pem) free(head->pubkey_pem);
 			free(head);
+
 			clients->size--;
 			// update_user_list();
 			return;
@@ -107,7 +127,11 @@ void clear_clients(ll_clients* clients) {
 	struct client* curr = clients->head;
 	while (curr) {
 		struct client* next = curr->next;
+
+		if (curr->pubkey) EVP_PKEY_free(curr->pubkey);
+		if (curr->pubkey_pem) free(curr->pubkey_pem);
 		free(curr);
+
 		curr = next;
 	}
 	clients->head = NULL;
@@ -237,11 +261,31 @@ int decrypt_key_with_rsa(EVP_PKEY* privkey, const unsigned char* encrypted_key, 
 
 // TODO: replace deprecated functions
 int node_generate_rsa_keypair(node_t* node) {
-	node->rsa_keypair = RSA_generate_key(2048, RSA_F4, NULL, NULL);
-	if (!node->rsa_keypair) return 0;
+	EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
+	if (!ctx) return 0;
 
+	if (EVP_PKEY_keygen_init(ctx) <= 0) {
+		EVP_PKEY_CTX_free(ctx);
+		return 0;
+	}
+	if (EVP_PKEY_CTX_set_rsa_keygen_bits(ctx, 2048) <= 0) {
+		EVP_PKEY_CTX_free(ctx);
+		return 0;
+	}
+
+	if (EVP_PKEY_keygen(ctx, &(node->keypair)) <= 0) {
+		EVP_PKEY_CTX_free(ctx);
+		return 0;
+	}
+
+	EVP_PKEY_CTX_free(ctx);
+
+	// Export public key to PEM
 	BIO* mem = BIO_new(BIO_s_mem());
-	PEM_write_bio_RSA_PUBKEY(mem, node->rsa_keypair);
+	if (!PEM_write_bio_PUBKEY(mem, node->keypair)) { // PEM_write_bio_PUBKEY handles EVP_PKEY*
+		BIO_free(mem);
+		return 0;
+	}
 	size_t pub_len = BIO_pending(mem);
 	node->pubkey_pem = malloc(pub_len + 1);
 	BIO_read(mem, node->pubkey_pem, pub_len);
@@ -249,6 +293,14 @@ int node_generate_rsa_keypair(node_t* node) {
 	BIO_free(mem);
 
 	return 1;
+}
+
+// caller must free with EVP_PKEY_free(pubkey)
+EVP_PKEY* peer_pubkey_from_pem(const char* pubkey_pem) {
+	BIO* mem = BIO_new_mem_buf(pubkey_pem, -1);
+	EVP_PKEY* pubkey = PEM_read_bio_PUBKEY(mem, NULL, NULL, NULL);
+	BIO_free(mem);
+	return pubkey; // caller must free with EVP_PKEY_free(pubkey)
 }
 
 // --- ### ---

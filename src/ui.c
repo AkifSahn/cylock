@@ -1,7 +1,5 @@
-#include <arpa/inet.h>
-#include <glib.h>
 #include <gtk/gtk.h>
-#include <netinet/in.h>
+#include <openssl/evp.h>
 #include <openssl/rsa.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -197,10 +195,10 @@ void connect_to_network(GtkWindow* parent) {
 			srand(time(NULL));
 			atomic_store(&node.id, rand() % UINT16_MAX);
 
-			if (node.rsa_keypair) RSA_free(node.rsa_keypair);
+			if (node.keypair) EVP_PKEY_free(node.keypair);
 			if (node.pubkey_pem) free(node.pubkey_pem);
-            node.rsa_keypair = NULL;
-            node.pubkey_pem = NULL;
+			node.keypair = NULL;
+			node.pubkey_pem = NULL;
 			node_generate_rsa_keypair(&node);
 
 			cache_clear(&cache); // Reset the id cache
@@ -233,10 +231,10 @@ void disconnect_from_network(GtkWindow* parent) {
 	awake_event = NULL;
 	prune_event = NULL;
 
-	if (node.rsa_keypair) RSA_free(node.rsa_keypair);
+	if (node.keypair) EVP_PKEY_free(node.keypair);
 	if (node.pubkey_pem) free(node.pubkey_pem);
-    node.rsa_keypair = NULL;
-    node.pubkey_pem = NULL;
+	node.keypair = NULL;
+	node.pubkey_pem = NULL;
 
 	clear_clients(&known_clients);
 	g_idle_add((GSourceFunc)update_user_list, NULL);
