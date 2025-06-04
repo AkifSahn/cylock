@@ -1,8 +1,11 @@
 #include <gtk/gtk.h>
+#include <openssl/crypto.h>
 #include <openssl/evp.h>
+#include <openssl/rand.h>
 #include <openssl/rsa.h>
 #include <pthread.h>
 #include <stdatomic.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,7 +38,7 @@ char local_ip[INET_ADDRSTRLEN];
 char broadcast_ip[INET_ADDRSTRLEN];
 
 // in microsecond
-#define NOTIFY_EVENT_TIMER 10000000
+#define NOTIFY_EVENT_TIMER 1000000
 // In microsecond
 #define PRUNE_EVENT_TIMER 60000000
 // in second
@@ -74,6 +77,77 @@ gboolean update_user_list(gpointer unused) {
 	return FALSE;
 }
 
+// [header]
+// [iv]
+// [name_len:uint8_t][name][encrytpted_len:uint16_t][encrypted_key]
+// [name_len][name][encrytpted_len][encrypted_key]
+// [name_len][name][encrytpted_len][encrypted_key]
+// [ciphertext_len:uint32_t][ciphertext]
+unsigned char* decrypt_incoming_message(const char* buffer, const int cipher_len, const char name[NAME_LEN],
+	const uint8_t numkeys, EVP_PKEY* keypair, int* plaintextlen) {
+
+	int pos = 0;
+	unsigned char aes_iv[AES_IVLEN];
+	memcpy(aes_iv, buffer, AES_IVLEN * sizeof(unsigned char));
+	pos += AES_IVLEN * sizeof(unsigned char);
+
+	unsigned char decrypted_key[AES_KEYLEN];
+	bool found = false;
+	for (int i = 0; i < numkeys; ++i) {
+		uint8_t name_len;
+		memcpy(&name_len, buffer + pos, sizeof(uint8_t));
+		pos += sizeof(uint8_t);
+
+		unsigned char* key_name = (unsigned char*)malloc(name_len * sizeof(unsigned char));
+		memcpy(key_name, buffer + pos, name_len * sizeof(unsigned char));
+		key_name[name_len] = '\0';
+		pos += sizeof(unsigned char) * name_len;
+
+		// Compare key_name and name
+		uint16_t encrypted_len;
+
+		memcpy(&encrypted_len, buffer + pos, sizeof(uint16_t));
+		pos += sizeof(uint16_t);
+
+		unsigned char* encrypted_key = (unsigned char*)malloc(encrypted_len * sizeof(unsigned char));
+		memcpy(encrypted_key, buffer + pos, encrypted_len * sizeof(unsigned char));
+		pos += encrypted_len * sizeof(unsigned char);
+		if (strcmp((const char*)key_name, name) == 0) {
+			// This is our key, decrypt it
+			found = true;
+
+			int keylen = decrypt_key_with_rsa(keypair, encrypted_key, encrypted_len, decrypted_key);
+			if (keylen < 0) {
+				fprintf(stderr, "failed to decrypt the keypair!\n");
+				free(key_name);
+				free(encrypted_key);
+				return NULL;
+			}
+		}
+		free(encrypted_key);
+		free(key_name);
+	}
+
+	if (!found) return NULL;
+
+	// Now we are at the ciphertext part
+	uint32_t ciphertext_len;
+	memcpy(&ciphertext_len, buffer + pos, sizeof(uint32_t));
+	pos += sizeof(uint32_t);
+
+	unsigned char* ciphertext = malloc(ciphertext_len * sizeof(unsigned char));
+	memcpy(ciphertext, buffer + pos, ciphertext_len * sizeof(unsigned char));
+	pos += ciphertext_len * sizeof(unsigned char);
+
+	// TODO: decide on maximum message size
+	unsigned char* plaintext = malloc(2048 * sizeof(unsigned char));
+	*plaintextlen = decrypt_aes(ciphertext, ciphertext_len, decrypted_key, aes_iv, plaintext);
+
+	free(ciphertext);
+
+	return plaintext;
+}
+
 // GTK thread-safe message post
 void gui_message_callback(const header_t* header, const char* message, int message_len) {
 	if (header->cl_flags != 0) {
@@ -109,21 +183,37 @@ void gui_message_callback(const header_t* header, const char* message, int messa
 		return;
 	}
 
-	char* msg = g_strdup_printf("%s: %.*s", header->name, message_len, message);
-	g_idle_add(show_incoming_message, msg);
+	// Message is encrypted
+	if (header->cl_flags & CL_ENCRYPTED) {
+		int msg_len = 0;
+		// Try to decrypt the message
+		unsigned char* dec_msg
+			= decrypt_incoming_message(message, message_len, node.name, header->num_key, node.keypair, &msg_len);
+		if (dec_msg) {
+			// Show decrypted message
+			printf("Decrypted the message!\n%s\n", dec_msg);
+			char* msg_str = g_strdup_printf("%s: %.*s", header->name, msg_len, dec_msg);
+			g_idle_add(show_incoming_message, msg_str);
+			free(dec_msg);
+		} else {
+			// Not for us, or failed to decrypt
+			// Optionally log or ignore
+		}
+	} else {
+		// Existing code for non-encrypted/control messages
+		printf("Not encrypted\n");
+		char* msg_str = g_strdup_printf("%s: %.*s", header->name, message_len, message);
+		g_idle_add(show_incoming_message, msg_str);
+	}
 
 	if (node.type == N_GATEWAY) {
-		/*
-		  If coming from outside, we also want to broadcast?
-		  TODO: can't have more than 1 gw in same subnet with this
-		*/
 		cache_add(&cache, header->id);
 		if (header->node_type == N_GATEWAY && header->cl_flags & CL_RELAYED) { // Only broadcast to subnet if coming from relay
-			udp_send(message, message_len, header->name, header->node_type, header->id, broadcast_ip, 6969,
+			udp_send(message, message_len, header->name, header->node_type, header->id, known_clients.size, broadcast_ip, 6969,
 				header->cl_flags ^ CL_RELAYED);
 		}
 		for (int i = 0; i < num_gw_ips; ++i) {
-			udp_send(message, message_len, header->name, header->node_type, header->id, gateway_ips[i], 6969,
+			udp_send(message, message_len, header->name, header->node_type, header->id, known_clients.size, gateway_ips[i], 6969,
 				header->cl_flags | CL_RELAYED);
 		}
 	}
@@ -139,7 +229,15 @@ void generate_keys() {
 timer_event* awake_event;
 void* timer_awake(void* arg) {
 	node_t* node = (node_t*)arg;
-	udp_send(NULL, NULL, node->name, node->type, atomic_fetch_add(&node->id, 1), broadcast_ip, RECV_PORT, CL_ALIVE);
+	int id = atomic_fetch_add(&node->id, 1);
+	udp_send(node->pubkey_pem, strlen(node->pubkey_pem), node->name, node->type, id, 0, broadcast_ip, RECV_PORT, CL_ALIVE);
+
+	if (node->type == N_GATEWAY) {
+		for (int i = 0; i < num_gw_ips; ++i) {
+			udp_send(node->pubkey_pem, strlen(node->pubkey_pem), nickname, node->type, id, known_clients.size, gateway_ips[i],
+				6969, CL_RELAYED | CL_ALIVE);
+		}
+	}
 	return NULL;
 }
 
@@ -199,7 +297,9 @@ void connect_to_network(GtkWindow* parent) {
 			if (node.pubkey_pem) free(node.pubkey_pem);
 			node.keypair = NULL;
 			node.pubkey_pem = NULL;
-			node_generate_rsa_keypair(&node);
+			if (!node_generate_rsa_keypair(&node)) {
+				fprintf(stderr, "Failed to generate RSA keypair");
+			}
 
 			cache_clear(&cache); // Reset the id cache
 			if (start_udp_receiver(&node, RECV_PORT, gui_message_callback) == 0) {
@@ -207,7 +307,7 @@ void connect_to_network(GtkWindow* parent) {
 				awake_event = new_timer_event(NOTIFY_EVENT_TIMER, 0, timer_awake, &node);
 				prune_event = new_timer_event(PRUNE_EVENT_TIMER, 0, prune_stale_clients, NULL);
 				usleep(100);
-				udp_send(node.pubkey_pem, strlen(node.pubkey_pem), nickname, node.type, atomic_fetch_add(&node.id, 1),
+				udp_send(node.pubkey_pem, strlen(node.pubkey_pem), nickname, node.type, atomic_fetch_add(&node.id, 1), 0,
 					broadcast_ip, RECV_PORT, CL_CONNECTED);
 			}
 		}
@@ -261,19 +361,95 @@ void send_message(GtkWidget* widget, gpointer data) {
 			return;
 		}
 
+		// Generate AES key, encrypt message, encrypt AES key for each client
+		unsigned char aes_key[AES_KEYLEN];
+		unsigned char aes_iv[AES_IVLEN];
+
+		if (!RAND_bytes(aes_key, sizeof(aes_key)) || !RAND_bytes(aes_iv, sizeof(aes_iv))) {
+			// Handle error: unable to generate secure random key or IV
+			fprintf(stderr, "Failed to generate secure random AES key!\n");
+			return;
+		}
+
+		unsigned char ciphertext[4096]; // adjust size as needed
+		int ciphertext_len = encrypt_aes((unsigned char*)msg, strlen(msg), aes_key, aes_iv, ciphertext);
+		if (ciphertext_len <= 0) {
+			fprintf(stderr, "Failed to encrypt message\n");
+			// Handle encryption error
+			return;
+		}
+		unsigned char* encrypted_keys[known_clients.size];
+		int encrypted_key_lens[known_clients.size];
+		char* client_names[known_clients.size];
+
+		client* cur = known_clients.head;
+		int idx = 0;
+		while (cur) {
+			client_names[idx] = cur->name; // Shouldn't we use strcpy?
+			encrypted_keys[idx] = malloc(EVP_PKEY_size(cur->pubkey));
+			int elen = encrypt_key_with_rsa(cur->pubkey, aes_key, AES_KEYLEN, encrypted_keys[idx]);
+			if (elen <= 0) {
+				// Handle encryption error
+				fprintf(stderr, "Failed to encrypt AES keys using RSA of '%s'\n", cur->name), free(encrypted_keys[idx]);
+				// ... handle error as you like
+			}
+			encrypted_key_lens[idx] = elen;
+			cur = cur->next;
+			idx++;
+		}
+
+		unsigned char buf[4096];
+		int pos = 0;
+		// [header]
+		// [iv]
+		// [name_len:uint8_t][name][encrytpted_len:uint16_t][encrypted_key]
+		// [name_len][name][encrytpted_len][encrypted_key]
+		// [name_len][name][encrytpted_len][encrypted_key]
+		// [ciphertext_len:uint32_t][ciphertext]
+
+		memcpy(buf + pos, aes_iv, AES_IVLEN);
+		pos += AES_IVLEN;
+
+		for (int i = 0; i < known_clients.size; ++i) {
+			uint8_t name_len = strlen(client_names[i]);
+			memcpy(buf + pos, &name_len, sizeof(name_len));
+			pos += sizeof(name_len);
+			memcpy(buf + pos, client_names[i], name_len);
+			pos += name_len;
+
+			uint16_t eklen = encrypted_key_lens[i];
+			memcpy(buf + pos, &eklen, sizeof(eklen));
+			pos += sizeof(eklen);
+			memcpy(buf + pos, encrypted_keys[i], eklen);
+			pos += eklen;
+		}
+
+		uint32_t clen = ciphertext_len;
+		memcpy(buf + pos, &clen, sizeof(clen));
+		pos += sizeof(clen);
+		memcpy(buf + pos, ciphertext, clen);
+		pos += clen;
+
+		int total_len = pos;
+
 		// If gateway, send the message to the other gateways on the gateway_ips.txt list.
 		// Don't spoof the ip source when sending to other gateways
 		if (node.type == N_GATEWAY) {
 			uint16_t id = atomic_fetch_add(&node.id, 1);
 			for (int i = 0; i < num_gw_ips; ++i) {
-				udp_send(msg, strlen(msg), nickname, node.type, id, gateway_ips[i], 6969, CL_RELAYED);
+				udp_send((const char*)buf, total_len, nickname, node.type, id, known_clients.size, gateway_ips[i], 6969,
+					CL_RELAYED | CL_ENCRYPTED);
 			}
-			udp_send(msg, strlen(msg), nickname, node.type, id, broadcast_ip, 6969, 0);
+			udp_send((const char*)buf, total_len, nickname, node.type, id, known_clients.size, broadcast_ip, 6969, CL_ENCRYPTED);
 		} else {
 			// TODO: Use spoofed ip
 			// udp_send_raw(msg, strlen(msg), nickname, node.type, node.id, local_ip, broadcast_ip, 3131, 6969, 0);
-			udp_send(msg, strlen(msg), nickname, node.type, atomic_fetch_add(&node.id, 1), broadcast_ip, 6969, 0);
+			udp_send((const char*)buf, total_len, nickname, node.type, atomic_fetch_add(&node.id, 1), known_clients.size,
+				broadcast_ip, 6969, CL_ENCRYPTED);
 		}
+
+		for (int i = 0; i < known_clients.size; ++i)
+			free(encrypted_keys[i]);
 
 		gtk_entry_set_text(GTK_ENTRY(entry), "");
 	}
@@ -453,6 +629,7 @@ int main(int argc, char* argv[]) {
 
 	gtk_widget_show_all(window);
 	g_idle_add((GSourceFunc)update_user_list, NULL);
+
 	gtk_main();
 
 	return 0;

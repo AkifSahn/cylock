@@ -74,6 +74,7 @@ void* timer_thread(void* arg);
 // --- Crypto ---
 
 #define AES_KEYLEN 32 // 256 bits
+#define AES_IVLEN 16 // For AES-CBC
 
 int encrypt_aes(const unsigned char* plaintext, int plaintext_len, const unsigned char* key, const unsigned char* iv,
 	unsigned char* ciphertext);
@@ -81,8 +82,9 @@ int decrypt_aes(const unsigned char* ciphertext, int ciperhtext_len, const unsig
 	unsigned char* plaintext);
 
 int encrypt_key_with_rsa(EVP_PKEY* pubkey, const unsigned char* aes_key, int keylen, unsigned char* encrypted_key);
+
 int decrypt_key_with_rsa(EVP_PKEY* privkey, const unsigned char* encrypted_key, int encrypted_keylen,
-	unsigned char* decrypted_key, int decrypted_keylen);
+	unsigned char* decrypted_key);
 
 int node_generate_rsa_keypair(node_t* node);
 

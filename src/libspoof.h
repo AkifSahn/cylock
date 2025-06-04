@@ -33,6 +33,7 @@ enum cl_e {
 	CL_DISCONNECTED = 0x2, // Disconnected
 	CL_ALIVE = 0x4, // Stil alive
 	CL_RELAYED = 0x8, // Indicates that this packet is relayed
+	CL_ENCRYPTED = 0x10, // Packet is encrypted
 };
 
 typedef struct {
@@ -48,7 +49,6 @@ typedef struct {
 
 typedef void (*message_callback_t)(const header_t* header, const char* message, int message_len);
 
-// Add to node_t
 typedef struct Node {
 	char name[NAME_LEN];
 	node_e type;
@@ -71,10 +71,11 @@ int start_udp_receiver(node_t* node, uint16_t listen_port, message_callback_t cb
 int stop_udp_receiver(node_t* node);
 
 // udp_send needs to know the senders name, and node_id of the sender.
-void udp_send_raw(const char* msg, uint16_t size, const char name[NAME_LEN], node_e n_type, uint16_t id,
+void udp_send_raw(const char* msg, uint16_t size, const char name[NAME_LEN], node_e n_type, uint16_t id, uint8_t num_keys,
 	char s_ip[INET_ADDRSTRLEN], char d_ip[INET_ADDRSTRLEN], uint16_t s_port, uint16_t d_port, enum cl_e flags);
 
-void udp_send(const char* msg, uint16_t size, const char name[NAME_LEN], node_e n_type, uint16_t id, char d_ip[INET_ADDRSTRLEN],
-	uint16_t d_port, enum cl_e flags);
+void udp_send(const char* msg, uint16_t size, const char name[NAME_LEN], node_e n_type, uint16_t id, uint8_t num_keys,
+	char d_ip[INET_ADDRSTRLEN], uint16_t d_port, enum cl_e flags);
 
 #endif
+

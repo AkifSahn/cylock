@@ -238,25 +238,42 @@ int encrypt_key_with_rsa(EVP_PKEY* pubkey, const unsigned char* aes_key, int key
 	EVP_PKEY_CTX_set_rsa_padding(ctx, RSA_PKCS1_OAEP_PADDING);
 
 	if (EVP_PKEY_encrypt(ctx, encrypted_key, &outlen, aes_key, keylen) <= 0) {
+		outlen = -1;
 		// handle error
 	}
 	EVP_PKEY_CTX_free(ctx);
 	return outlen; // encrypted key length
 }
 
-int decrypt_key_with_rsa(EVP_PKEY* privkey, const unsigned char* encrypted_key, int encrypted_keylen,
-	unsigned char* decrypted_key, int decrypted_keylen) {
+int decrypt_key_with_rsa(
+	EVP_PKEY* privkey, const unsigned char* encrypted_key, int encrypted_keylen, unsigned char* decrypted_key) {
 	EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new(privkey, NULL);
+	if (!ctx) return -1;
 
-	size_t outlen = decrypted_keylen;
-	EVP_PKEY_decrypt_init(ctx);
-	EVP_PKEY_CTX_set_rsa_padding(ctx, RSA_PKCS1_OAEP_PADDING);
-
-	if (EVP_PKEY_decrypt(ctx, decrypted_key, &outlen, encrypted_key, encrypted_keylen) <= 0) {
-		// handle error
+	if (EVP_PKEY_decrypt_init(ctx) <= 0) {
+		EVP_PKEY_CTX_free(ctx);
+		return -1;
 	}
+	if (EVP_PKEY_CTX_set_rsa_padding(ctx, RSA_PKCS1_OAEP_PADDING) <= 0) {
+		EVP_PKEY_CTX_free(ctx);
+		return -1;
+	}
+
+	// 1st call to determine buffer length (optional, but good practice)
+	size_t outlen = 0;
+	if (EVP_PKEY_decrypt(ctx, NULL, &outlen, encrypted_key, encrypted_keylen) <= 0) {
+		EVP_PKEY_CTX_free(ctx);
+		return -1;
+	}
+
+	// 2nd call to do actual decrypt
+	if (EVP_PKEY_decrypt(ctx, decrypted_key, &outlen, encrypted_key, encrypted_keylen) <= 0) {
+		EVP_PKEY_CTX_free(ctx);
+		return -1;
+	}
+
 	EVP_PKEY_CTX_free(ctx);
-	return outlen; // should be AES_KEYLEN
+	return (int)outlen;
 }
 
 // TODO: replace deprecated functions
