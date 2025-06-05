@@ -86,7 +86,6 @@ gboolean update_user_list(gpointer unused) {
 // [ciphertext_len:uint32_t][ciphertext].
 unsigned char* decrypt_incoming_message(const char* buffer, const int cipher_len, const char name[NAME_LEN],
 	const uint8_t numkeys, EVP_PKEY* keypair, int* plaintextlen) {
-
 	int pos = 0;
 	unsigned char aes_iv[AES_IVLEN];
 	memcpy(aes_iv, buffer, AES_IVLEN * sizeof(unsigned char));
@@ -152,6 +151,8 @@ unsigned char* decrypt_incoming_message(const char* buffer, const int cipher_len
 // GTK thread-safe message post
 void gui_message_callback(const header_t* header, const char* message, int message_len) {
 	// Parse the flags
+	char* msg_str = NULL;
+
 	if (header->cl_flags & CL_CONNECTED) {
 		// Save username to known connections
 		if (!has_client(&known_clients, header->name)) {
@@ -159,23 +160,20 @@ void gui_message_callback(const header_t* header, const char* message, int messa
 			add_new_client(&known_clients, header->name, header->node_type, message);
 			g_idle_add((GSourceFunc)update_user_list, NULL);
 		}
-		message = "New connection!";
-		message_len = strlen(message);
+		msg_str = g_strdup_printf("%s: %s", header->name, "New connection");
 	} else if (header->cl_flags & CL_DISCONNECTED && strcmp(header->name, node.name)) {
 		// Remove username from known conenctions
 		remove_client(&known_clients, header->name);
 		g_idle_add((GSourceFunc)update_user_list, NULL);
-		message = "Disconnected!";
-		message_len = strlen(message);
+		msg_str = g_strdup_printf("%s: %s", header->name, "Disconnected");
 	} else if (header->cl_flags & CL_ALIVE) {
 		client* c = find_client(&known_clients, header->name);
-		if (c) {
+		if (c) { // We already know about this client
 			c->last_seen = time(NULL);
-		} else {
+		} else { // We don't know about this client yet
 			add_new_client(&known_clients, header->name, header->node_type, message);
 			g_idle_add((GSourceFunc)update_user_list, NULL);
 		}
-		return;
 	}
 
 	if (node.type == N_GATEWAY && cache_search(&cache, header->id)) {
@@ -190,19 +188,18 @@ void gui_message_callback(const header_t* header, const char* message, int messa
 			= decrypt_incoming_message(message, message_len, node.name, header->num_key, node.keypair, &msg_len);
 		if (dec_msg && msg_len > 0) {
 			// Show decrypted message
-			char* msg_str = g_strdup_printf("%s: %.*s", header->name, msg_len, dec_msg);
-			g_idle_add(show_incoming_message, msg_str);
+			msg_str = g_strdup_printf("%s: %.*s", header->name, msg_len, dec_msg);
 			free(dec_msg);
 		} else {
-			// We may not want to do this everytime! e.g. private conversations
-			// g_idle_add(show_incoming_message, "Failed to decrypt a message!");
+            // Failed to decrypt a message
 		}
-	} else {
-		// non-encrypted/control messages
-		char* msg_str = g_strdup_printf("%s: %.*s", header->name, message_len, message);
+	}
+
+	if (msg_str) {
 		g_idle_add(show_incoming_message, msg_str);
 	}
 
+    // Relay any incoming message
 	if (node.type == N_GATEWAY) {
 		cache_add(&cache, header->id);
 		if (header->node_type == N_GATEWAY && header->cl_flags & CL_RELAYED) { // Only broadcast to subnet if coming from relay
