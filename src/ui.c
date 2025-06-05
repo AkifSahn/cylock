@@ -45,6 +45,8 @@ char broadcast_ip[INET_ADDRSTRLEN];
 // in second
 #define PRUNE_STALE_CLIENT_DELAY 120
 
+#define DEST_PORT 6969
+
 // This function runs on the GTK main thread to update the chat window
 gboolean show_incoming_message(gpointer data) {
 	const char* msg = (const char*)data;
@@ -78,12 +80,10 @@ gboolean update_user_list(gpointer unused) {
 	return FALSE;
 }
 
-// [header]
 // [iv]
-// [name_len:uint8_t][name][encrytpted_len:uint16_t][encrypted_key]
-// [name_len][name][encrytpted_len][encrypted_key]
-// [name_len][name][encrytpted_len][encrypted_key]
-// [ciphertext_len:uint32_t][ciphertext]
+// [name_len:uint8_t][name][encrytpted_len:uint16_t][encrypted_key].
+// ...
+// [ciphertext_len:uint32_t][ciphertext].
 unsigned char* decrypt_incoming_message(const char* buffer, const int cipher_len, const char name[NAME_LEN],
 	const uint8_t numkeys, EVP_PKEY* keypair, int* plaintextlen) {
 
@@ -151,33 +151,31 @@ unsigned char* decrypt_incoming_message(const char* buffer, const int cipher_len
 
 // GTK thread-safe message post
 void gui_message_callback(const header_t* header, const char* message, int message_len) {
-	if (header->cl_flags != 0) {
-		// Parse the flags
-		if (header->cl_flags & CL_CONNECTED) {
-			// Save username to known connections
-			if (!has_client(&known_clients, header->name)) {
-				// message is public key PEM string
-				add_new_client(&known_clients, header->name, header->node_type, message);
-				g_idle_add((GSourceFunc)update_user_list, NULL);
-			}
-			message = "New connection!";
-			message_len = strlen(message);
-		} else if (header->cl_flags & CL_DISCONNECTED && strcmp(header->name, node.name)) {
-			// Remove username from known conenctions
-			remove_client(&known_clients, header->name);
+	// Parse the flags
+	if (header->cl_flags & CL_CONNECTED) {
+		// Save username to known connections
+		if (!has_client(&known_clients, header->name)) {
+			// message is public key PEM string
+			add_new_client(&known_clients, header->name, header->node_type, message);
 			g_idle_add((GSourceFunc)update_user_list, NULL);
-			message = "Disconnected!";
-			message_len = strlen(message);
-		} else if (header->cl_flags & CL_ALIVE) {
-			client* c = find_client(&known_clients, header->name);
-			if (c) {
-				c->last_seen = time(NULL);
-			} else {
-				add_new_client(&known_clients, header->name, header->node_type, message);
-				g_idle_add((GSourceFunc)update_user_list, NULL);
-			}
-			return;
 		}
+		message = "New connection!";
+		message_len = strlen(message);
+	} else if (header->cl_flags & CL_DISCONNECTED && strcmp(header->name, node.name)) {
+		// Remove username from known conenctions
+		remove_client(&known_clients, header->name);
+		g_idle_add((GSourceFunc)update_user_list, NULL);
+		message = "Disconnected!";
+		message_len = strlen(message);
+	} else if (header->cl_flags & CL_ALIVE) {
+		client* c = find_client(&known_clients, header->name);
+		if (c) {
+			c->last_seen = time(NULL);
+		} else {
+			add_new_client(&known_clients, header->name, header->node_type, message);
+			g_idle_add((GSourceFunc)update_user_list, NULL);
+		}
+		return;
 	}
 
 	if (node.type == N_GATEWAY && cache_search(&cache, header->id)) {
@@ -196,8 +194,8 @@ void gui_message_callback(const header_t* header, const char* message, int messa
 			g_idle_add(show_incoming_message, msg_str);
 			free(dec_msg);
 		} else {
-            // We may not want to do this everytime! e.g. private conversations
-            g_idle_add(show_incoming_message, "Failed to decrypt a message!");
+			// We may not want to do this everytime! e.g. private conversations
+			// g_idle_add(show_incoming_message, "Failed to decrypt a message!");
 		}
 	} else {
 		// non-encrypted/control messages
@@ -208,12 +206,12 @@ void gui_message_callback(const header_t* header, const char* message, int messa
 	if (node.type == N_GATEWAY) {
 		cache_add(&cache, header->id);
 		if (header->node_type == N_GATEWAY && header->cl_flags & CL_RELAYED) { // Only broadcast to subnet if coming from relay
-			udp_send(message, message_len, header->name, header->node_type, header->id, known_clients.size, broadcast_ip, 6969,
-				header->cl_flags ^ CL_RELAYED);
+			udp_send(message, message_len, header->name, header->node_type, header->id, known_clients.size, broadcast_ip,
+				DEST_PORT, header->cl_flags ^ CL_RELAYED);
 		}
 		for (int i = 0; i < num_gw_ips; ++i) {
-			udp_send(message, message_len, header->name, header->node_type, header->id, known_clients.size, gateway_ips[i], 6969,
-				header->cl_flags | CL_RELAYED);
+			udp_send(message, message_len, header->name, header->node_type, header->id, known_clients.size, gateway_ips[i],
+				DEST_PORT, header->cl_flags | CL_RELAYED);
 		}
 	}
 }
@@ -229,12 +227,12 @@ timer_event* awake_event;
 void* timer_awake(void* arg) {
 	node_t* node = (node_t*)arg;
 	int id = atomic_fetch_add(&node->id, 1);
-	udp_send(node->pubkey_pem, strlen(node->pubkey_pem), node->name, node->type, id, 0, broadcast_ip, RECV_PORT, CL_ALIVE);
+	udp_send(node->pubkey_pem, strlen(node->pubkey_pem), node->name, node->type, id, 0, broadcast_ip, DEST_PORT, CL_ALIVE);
 
 	if (node->type == N_GATEWAY) {
 		for (int i = 0; i < num_gw_ips; ++i) {
 			udp_send(node->pubkey_pem, strlen(node->pubkey_pem), nickname, node->type, id, known_clients.size, gateway_ips[i],
-				6969, CL_RELAYED | CL_ALIVE);
+				DEST_PORT, CL_RELAYED | CL_ALIVE);
 		}
 	}
 	return NULL;
@@ -301,13 +299,13 @@ void connect_to_network(GtkWindow* parent) {
 			}
 
 			cache_clear(&cache); // Reset the id cache
-			if (start_udp_receiver(&node, RECV_PORT, gui_message_callback) == 0) {
+			if (start_udp_receiver(&node, DEST_PORT, gui_message_callback) == 0) {
 				// Send a CL_CONNECTED message
 				awake_event = new_timer_event(NOTIFY_EVENT_TIMER, 0, timer_awake, &node);
 				prune_event = new_timer_event(PRUNE_EVENT_TIMER, 0, prune_stale_clients, NULL);
 				usleep(100);
 				udp_send(node.pubkey_pem, strlen(node.pubkey_pem), nickname, node.type, atomic_fetch_add(&node.id, 1), 0,
-					broadcast_ip, RECV_PORT, CL_CONNECTED);
+					broadcast_ip, DEST_PORT, CL_CONNECTED);
 			}
 		}
 	}
@@ -398,7 +396,7 @@ void send_message(GtkWidget* widget, gpointer data) {
 		// [header]
 		// [iv]
 		// [name_len:uint8_t][name][encrytpted_len:uint16_t][encrypted_key]
-        // ...
+		// ...
 		// [ciphertext_len:uint32_t][ciphertext]
 
 		memcpy(buf + pos, aes_iv, AES_IVLEN);
@@ -431,15 +429,15 @@ void send_message(GtkWidget* widget, gpointer data) {
 		if (node.type == N_GATEWAY) {
 			uint16_t id = atomic_fetch_add(&node.id, 1);
 			for (int i = 0; i < num_gw_ips; ++i) {
-				udp_send((const char*)buf, total_len, nickname, node.type, id, known_clients.size, gateway_ips[i], 6969,
+				udp_send((const char*)buf, total_len, nickname, node.type, id, known_clients.size, gateway_ips[i], DEST_PORT,
 					CL_RELAYED | CL_ENCRYPTED);
 			}
-			udp_send((const char*)buf, total_len, nickname, node.type, id, known_clients.size, broadcast_ip, 6969, CL_ENCRYPTED);
+			udp_send(
+				(const char*)buf, total_len, nickname, node.type, id, known_clients.size, broadcast_ip, DEST_PORT, CL_ENCRYPTED);
 		} else {
 			// TODO: Use spoofed ip
-			// udp_send_raw(msg, strlen(msg), nickname, node.type, node.id, local_ip, broadcast_ip, 3131, 6969, 0);
 			udp_send((const char*)buf, total_len, nickname, node.type, atomic_fetch_add(&node.id, 1), known_clients.size,
-				broadcast_ip, 6969, CL_ENCRYPTED);
+				broadcast_ip, DEST_PORT, CL_ENCRYPTED);
 		}
 
 		for (int i = 0; i < known_clients.size; ++i)
