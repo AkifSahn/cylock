@@ -13,6 +13,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "glib.h"
 #include "libspoof.h"
 #include "utils.h"
 
@@ -189,19 +190,17 @@ void gui_message_callback(const header_t* header, const char* message, int messa
 		// Try to decrypt the message
 		unsigned char* dec_msg
 			= decrypt_incoming_message(message, message_len, node.name, header->num_key, node.keypair, &msg_len);
-		if (dec_msg) {
+		if (dec_msg && msg_len > 0) {
 			// Show decrypted message
-			printf("Decrypted the message!\n%s\n", dec_msg);
 			char* msg_str = g_strdup_printf("%s: %.*s", header->name, msg_len, dec_msg);
 			g_idle_add(show_incoming_message, msg_str);
 			free(dec_msg);
 		} else {
-			// Not for us, or failed to decrypt
-			// Optionally log or ignore
+            // We may not want to do this everytime! e.g. private conversations
+            g_idle_add(show_incoming_message, "Failed to decrypt a message!");
 		}
 	} else {
-		// Existing code for non-encrypted/control messages
-		printf("Not encrypted\n");
+		// non-encrypted/control messages
 		char* msg_str = g_strdup_printf("%s: %.*s", header->name, message_len, message);
 		g_idle_add(show_incoming_message, msg_str);
 	}
@@ -366,7 +365,6 @@ void send_message(GtkWidget* widget, gpointer data) {
 		unsigned char aes_iv[AES_IVLEN];
 
 		if (!RAND_bytes(aes_key, sizeof(aes_key)) || !RAND_bytes(aes_iv, sizeof(aes_iv))) {
-			// Handle error: unable to generate secure random key or IV
 			fprintf(stderr, "Failed to generate secure random AES key!\n");
 			return;
 		}
@@ -375,7 +373,6 @@ void send_message(GtkWidget* widget, gpointer data) {
 		int ciphertext_len = encrypt_aes((unsigned char*)msg, strlen(msg), aes_key, aes_iv, ciphertext);
 		if (ciphertext_len <= 0) {
 			fprintf(stderr, "Failed to encrypt message\n");
-			// Handle encryption error
 			return;
 		}
 		unsigned char* encrypted_keys[known_clients.size];
@@ -389,9 +386,7 @@ void send_message(GtkWidget* widget, gpointer data) {
 			encrypted_keys[idx] = malloc(EVP_PKEY_size(cur->pubkey));
 			int elen = encrypt_key_with_rsa(cur->pubkey, aes_key, AES_KEYLEN, encrypted_keys[idx]);
 			if (elen <= 0) {
-				// Handle encryption error
 				fprintf(stderr, "Failed to encrypt AES keys using RSA of '%s'\n", cur->name), free(encrypted_keys[idx]);
-				// ... handle error as you like
 			}
 			encrypted_key_lens[idx] = elen;
 			cur = cur->next;
@@ -403,8 +398,7 @@ void send_message(GtkWidget* widget, gpointer data) {
 		// [header]
 		// [iv]
 		// [name_len:uint8_t][name][encrytpted_len:uint16_t][encrypted_key]
-		// [name_len][name][encrytpted_len][encrypted_key]
-		// [name_len][name][encrytpted_len][encrypted_key]
+        // ...
 		// [ciphertext_len:uint32_t][ciphertext]
 
 		memcpy(buf + pos, aes_iv, AES_IVLEN);

@@ -193,13 +193,26 @@ void* timer_thread(void* arg) {
 int encrypt_aes(const unsigned char* plaintext, int plaintext_len, const unsigned char* key, const unsigned char* iv,
 	unsigned char* ciphertext) {
 	EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+	if (!ctx) {
+		return -1;
+	}
 	int len, ciphertext_len;
 
-	EVP_EncryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, key, iv);
-	EVP_EncryptUpdate(ctx, ciphertext, &len, plaintext, plaintext_len);
+	if (EVP_EncryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, key, iv) <= 0) {
+		EVP_CIPHER_CTX_free(ctx);
+		return -1;
+	}
+
+	if (EVP_EncryptUpdate(ctx, ciphertext, &len, plaintext, plaintext_len) <= 0) {
+		EVP_CIPHER_CTX_free(ctx);
+		return -1;
+	}
 	ciphertext_len = len;
 
-	EVP_EncryptFinal_ex(ctx, ciphertext + len, &len);
+	if (EVP_EncryptFinal_ex(ctx, ciphertext + len, &len) <= 0) {
+		EVP_CIPHER_CTX_free(ctx);
+		return -1;
+	}
 	ciphertext_len += len;
 
 	EVP_CIPHER_CTX_free(ctx);
@@ -211,16 +224,18 @@ int decrypt_aes(const unsigned char* ciphertext, int ciphertext_len, const unsig
 	EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
 	int len, plaintext_len;
 
-	// Initialize decryption operation
-	EVP_DecryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, key, iv);
+	if (EVP_DecryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, key, iv) <= 0) {
+		EVP_CIPHER_CTX_free(ctx);
+		return -1;
+	}
 
-	// Provide the ciphertext to decrypt
-	EVP_DecryptUpdate(ctx, plaintext, &len, ciphertext, ciphertext_len);
+	if (EVP_DecryptUpdate(ctx, plaintext, &len, ciphertext, ciphertext_len) <= 0) {
+		EVP_CIPHER_CTX_free(ctx);
+		return -1;
+	}
 	plaintext_len = len;
 
-	// Finalize decryption (handles padding)
 	if (EVP_DecryptFinal_ex(ctx, plaintext + len, &len) <= 0) {
-		// Decryption failed, possibly wrong key/iv/padding
 		EVP_CIPHER_CTX_free(ctx);
 		return -1;
 	}
@@ -234,13 +249,21 @@ int encrypt_key_with_rsa(EVP_PKEY* pubkey, const unsigned char* aes_key, int key
 	EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new(pubkey, NULL);
 	size_t outlen = EVP_PKEY_size(pubkey);
 
-	EVP_PKEY_encrypt_init(ctx);
-	EVP_PKEY_CTX_set_rsa_padding(ctx, RSA_PKCS1_OAEP_PADDING);
+	if (EVP_PKEY_encrypt_init(ctx) <= 0) {
+		EVP_PKEY_CTX_free(ctx);
+		return -1;
+	}
+
+	if (EVP_PKEY_CTX_set_rsa_padding(ctx, RSA_PKCS1_OAEP_PADDING) <= 0) {
+		EVP_PKEY_CTX_free(ctx);
+		return -1;
+	}
 
 	if (EVP_PKEY_encrypt(ctx, encrypted_key, &outlen, aes_key, keylen) <= 0) {
-		outlen = -1;
-		// handle error
+		EVP_PKEY_CTX_free(ctx);
+		return -1;
 	}
+
 	EVP_PKEY_CTX_free(ctx);
 	return outlen; // encrypted key length
 }
@@ -259,7 +282,7 @@ int decrypt_key_with_rsa(
 		return -1;
 	}
 
-	// 1st call to determine buffer length (optional, but good practice)
+	// 1st call to determine buffer length
 	size_t outlen = 0;
 	if (EVP_PKEY_decrypt(ctx, NULL, &outlen, encrypted_key, encrypted_keylen) <= 0) {
 		EVP_PKEY_CTX_free(ctx);
@@ -276,7 +299,6 @@ int decrypt_key_with_rsa(
 	return (int)outlen;
 }
 
-// TODO: replace deprecated functions
 int node_generate_rsa_keypair(node_t* node) {
 	EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
 	if (!ctx) return 0;
@@ -299,7 +321,7 @@ int node_generate_rsa_keypair(node_t* node) {
 
 	// Export public key to PEM
 	BIO* mem = BIO_new(BIO_s_mem());
-	if (!PEM_write_bio_PUBKEY(mem, node->keypair)) { // PEM_write_bio_PUBKEY handles EVP_PKEY*
+	if (!PEM_write_bio_PUBKEY(mem, node->keypair)) {
 		BIO_free(mem);
 		return 0;
 	}
