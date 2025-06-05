@@ -129,7 +129,8 @@ int start_udp_receiver(node_t* node, uint16_t listen_port, message_callback_t cb
 int stop_udp_receiver(node_t* node) {
 	node->recv_running = 0;
 	// Optionally, send a dummy datagram to self to unblock recvfrom if needed
-	udp_send(NULL, 0, node->name, node->type, atomic_load(&node->id), 0, "255.255.255.255", RECV_PORT, CL_DISCONNECTED);
+	udp_send(
+		NULL, 0, node->name, node->uid, node->type, atomic_load(&node->id), 0, "255.255.255.255", RECV_PORT, CL_DISCONNECTED);
 	if (!node->recv_running) return 0;
 	pthread_join(node->recv_thread, NULL);
 	node->sock_listen = -1;
@@ -138,8 +139,8 @@ int stop_udp_receiver(node_t* node) {
 
 // takes a  data with size data_size
 // broadcasts to d_port with spoofed ip if randomize_ip is set
-void udp_send_raw(const char* msg, uint16_t size, const char name[NAME_LEN], node_e n_type, uint16_t id, uint8_t num_keys,
-	char s_ip[INET_ADDRSTRLEN], char d_ip[INET_ADDRSTRLEN], uint16_t s_port, uint16_t d_port, enum cl_e flags) {
+void udp_send_raw(const char* msg, uint16_t size, const char name[NAME_LEN], const char uid[UID_LEN], node_e n_type, uint16_t id,
+	uint8_t num_keys, char s_ip[INET_ADDRSTRLEN], char d_ip[INET_ADDRSTRLEN], uint16_t s_port, uint16_t d_port, enum cl_e flags) {
 	// Initialize variables.
 	char buffer[PCKT_LEN];
 
@@ -157,6 +158,7 @@ void udp_send_raw(const char* msg, uint16_t size, const char name[NAME_LEN], nod
 
 	custom_header->size = htons(sizeof(header_t) + size);
 	memcpy(custom_header->name, name, NAME_LEN);
+	memcpy(custom_header->uid, uid, UID_LEN);
 	custom_header->node_type = n_type;
 	custom_header->cl_flags = flags; // TODO: Needed for control messages
 	custom_header->id = id; // TODO: Needed for fragmentation
@@ -225,8 +227,8 @@ void udp_send_raw(const char* msg, uint16_t size, const char name[NAME_LEN], nod
 	close(sockfd);
 }
 
-void udp_send(const char* msg, uint16_t size, const char name[NAME_LEN], node_e n_type, uint16_t id, uint8_t num_keys,
-	char d_ip[INET_ADDRSTRLEN], uint16_t d_port, enum cl_e flags) {
+void udp_send(const char* msg, uint16_t size, const char name[NAME_LEN], const char uid[UID_LEN], node_e n_type, uint16_t id,
+	uint8_t num_keys, char d_ip[INET_ADDRSTRLEN], uint16_t d_port, enum cl_e flags) {
 
 	// Compose payload: header + message
 	char buffer[1024];
@@ -236,6 +238,7 @@ void udp_send(const char* msg, uint16_t size, const char name[NAME_LEN], node_e 
 
 	custom_header->size = htons(sizeof(header_t) + size);
 	memcpy(custom_header->name, name, NAME_LEN);
+	memcpy(custom_header->uid, uid, UID_LEN);
 	custom_header->node_type = n_type;
 	custom_header->cl_flags = flags;
 	custom_header->id = id;
@@ -276,4 +279,3 @@ void udp_send(const char* msg, uint16_t size, const char name[NAME_LEN], node_e 
 
 	close(sockfd);
 }
-

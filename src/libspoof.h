@@ -18,6 +18,7 @@ typedef enum {
 #define RECV_BUF_SIZE 2048
 
 #define NAME_LEN 32
+#define UID_LEN 8
 
 /*
  *      gw1 <--------> gw2 <------> c1,c2    gw3 <------> c3,c4
@@ -39,6 +40,7 @@ enum cl_e {
 typedef struct {
 	uint16_t size; // Size of the payload.
 	char name[NAME_LEN]; // nickname of the sender
+	char uid[UID_LEN]; // uid of the sender
 	node_e node_type;
 	uint8_t cl_flags; // control bit. If set, indicates the message is a control message
 	uint16_t id; // Packet ID
@@ -51,6 +53,7 @@ typedef void (*message_callback_t)(const header_t* header, const char* message, 
 
 typedef struct Node {
 	char name[NAME_LEN];
+	char uid[UID_LEN];
 	node_e type;
 	atomic_uint_fast16_t id;
 	int sock_listen;
@@ -71,11 +74,10 @@ int start_udp_receiver(node_t* node, uint16_t listen_port, message_callback_t cb
 int stop_udp_receiver(node_t* node);
 
 // udp_send needs to know the senders name, and node_id of the sender.
-void udp_send_raw(const char* msg, uint16_t size, const char name[NAME_LEN], node_e n_type, uint16_t id, uint8_t num_keys,
-	char s_ip[INET_ADDRSTRLEN], char d_ip[INET_ADDRSTRLEN], uint16_t s_port, uint16_t d_port, enum cl_e flags);
+void udp_send_raw(const char* msg, uint16_t size, const char name[NAME_LEN], const char uid[UID_LEN], node_e n_type, uint16_t id,
+	uint8_t num_keys, char s_ip[INET_ADDRSTRLEN], char d_ip[INET_ADDRSTRLEN], uint16_t s_port, uint16_t d_port, enum cl_e flags);
 
-void udp_send(const char* msg, uint16_t size, const char name[NAME_LEN], node_e n_type, uint16_t id, uint8_t num_keys,
-	char d_ip[INET_ADDRSTRLEN], uint16_t d_port, enum cl_e flags);
+void udp_send(const char* msg, uint16_t size, const char name[NAME_LEN], const char uid[UID_LEN], node_e n_type, uint16_t id,
+	uint8_t num_keys, char d_ip[INET_ADDRSTRLEN], uint16_t d_port, enum cl_e flags);
 
 #endif
-

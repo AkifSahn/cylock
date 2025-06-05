@@ -1,4 +1,5 @@
 #include "utils.h"
+#include "libspoof.h"
 #include <bits/types.h>
 #include <openssl/bio.h>
 #include <openssl/evp.h>
@@ -36,10 +37,10 @@ void cache_clear(id_cache* cache) {
 
 // --- Client Handling ---
 
-int has_client(ll_clients* clients, const char name[NAME_LEN]) {
+int has_client(ll_clients* clients, const char name[NAME_LEN], const char uid[UID_LEN]) {
 	struct client* head = clients->head;
 	while (head) {
-		if (!strcmp(head->name, name)) {
+		if (!strcmp(head->name, name) && !memcmp(head->uid, uid, UID_LEN)) {
 			return 1;
 		}
 		head = head->next;
@@ -47,13 +48,15 @@ int has_client(ll_clients* clients, const char name[NAME_LEN]) {
 	return 0;
 }
 
-void add_new_client(ll_clients* clients, const char name[NAME_LEN], node_e type, const char* pubkey_pem) {
-	if (has_client(clients, name)) {
+void add_new_client(
+	ll_clients* clients, const char name[NAME_LEN], const char uid[UID_LEN], node_e type, const char* pubkey_pem) {
+	if (has_client(clients, name, uid)) {
 		// Do not add duplicates
 		return;
 	}
 	struct client* new = (struct client*)malloc(sizeof(struct client));
 	memcpy(new->name, name, NAME_LEN * sizeof(char));
+	memcpy(new->uid, uid, UID_LEN);
 	new->type = type;
 	new->next = NULL;
 	new->prev = NULL;
@@ -87,19 +90,19 @@ void add_new_client(ll_clients* clients, const char name[NAME_LEN], node_e type,
 	// update_user_list();
 }
 
-client* find_client(ll_clients* clients, const char name[NAME_LEN]) {
+client* find_client(ll_clients* clients, const char name[NAME_LEN], const char uid[UID_LEN]) {
 	client* curr = clients->head;
 	while (curr) {
-		if (strcmp(curr->name, name) == 0) return curr;
+		if (strcmp(curr->name, name) == 0 && !memcmp(curr->uid, uid, UID_LEN)) return curr;
 		curr = curr->next;
 	}
 	return NULL;
 }
 
-void remove_client(ll_clients* clients, const char name[NAME_LEN]) {
+void remove_client(ll_clients* clients, const char name[NAME_LEN], const char uid[UID_LEN]) {
 	struct client* head = clients->head;
 	while (head) {
-		if (!strcmp(head->name, name)) {
+		if (!strcmp(head->name, name) && !memcmp(head->uid, uid, UID_LEN)) {
 			if (head->prev) {
 				head->prev->next = head->next;
 			} else {

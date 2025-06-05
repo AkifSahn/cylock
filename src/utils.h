@@ -32,6 +32,7 @@ typedef struct client client;
 
 struct client {
 	char name[NAME_LEN];
+	char uid[UID_LEN];
 	node_e type;
 	time_t last_seen;
 	char* pubkey_pem;
@@ -46,10 +47,10 @@ typedef struct {
 	uint8_t size;
 } ll_clients;
 
-int has_client(ll_clients* clients, const char name[NAME_LEN]);
-void add_new_client(ll_clients* clients, const char name[NAME_LEN], node_e type, const char* pubkey_pem);
-client* find_client(ll_clients* clients, const char name[NAME_LEN]);
-void remove_client(ll_clients* clients, const char name[NAME_LEN]);
+int has_client(ll_clients* clients, const char name[NAME_LEN], const char uid[UID_LEN]);
+void add_new_client(ll_clients* clients, const char name[NAME_LEN], const char uid[UID_LEN], node_e type, const char* pubkey_pem);
+client* find_client(ll_clients* clients, const char name[NAME_LEN], const char uid[UID_LEN]);
+void remove_client(ll_clients* clients, const char name[NAME_LEN], const char uid[UID_LEN]);
 void clear_clients(ll_clients* clients);
 
 // --- ### ---
@@ -83,8 +84,8 @@ int decrypt_aes(const unsigned char* ciphertext, int ciperhtext_len, const unsig
 
 int encrypt_key_with_rsa(EVP_PKEY* pubkey, const unsigned char* aes_key, int keylen, unsigned char* encrypted_key);
 
-int decrypt_key_with_rsa(EVP_PKEY* privkey, const unsigned char* encrypted_key, int encrypted_keylen,
-	unsigned char* decrypted_key);
+int decrypt_key_with_rsa(
+	EVP_PKEY* privkey, const unsigned char* encrypted_key, int encrypted_keylen, unsigned char* decrypted_key);
 
 int node_generate_rsa_keypair(node_t* node);
 
