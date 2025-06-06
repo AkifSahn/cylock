@@ -103,9 +103,9 @@ unsigned char* decrypt_incoming_message(const char* buffer, const int cipher_len
 		key_name[name_len] = '\0';
 		pos += sizeof(unsigned char) * name_len;
 
-        char uid[UID_LEN];
-        memcpy(uid, buffer+pos, UID_LEN);
-        pos += UID_LEN;
+		char uid[UID_LEN];
+		memcpy(uid, buffer + pos, UID_LEN);
+		pos += UID_LEN;
 
 		// Compare key_name and name
 		uint16_t encrypted_len;
@@ -154,7 +154,12 @@ unsigned char* decrypt_incoming_message(const char* buffer, const int cipher_len
 
 // GTK thread-safe message post
 void gui_message_callback(const header_t* header, const char* message, int message_len) {
-	// Parse the flags
+	// Drop the message, we seen it before
+	if (cache_search(&cache, header->id)) {
+		return;
+	}
+	cache_add(&cache, header->id);
+
 	char* msg_str = NULL;
 
 	if (header->cl_flags & CL_CONNECTED) {
@@ -180,10 +185,6 @@ void gui_message_callback(const header_t* header, const char* message, int messa
 		}
 	}
 
-	if (node.type == N_GATEWAY && cache_search(&cache, header->id)) {
-		return;
-	}
-
 	// Message is encrypted
 	if (header->cl_flags & CL_ENCRYPTED) {
 		int msg_len = 0;
@@ -205,7 +206,6 @@ void gui_message_callback(const header_t* header, const char* message, int messa
 
 	// Relay any incoming message
 	if (node.type == N_GATEWAY) {
-		cache_add(&cache, header->id);
 		if (header->node_type == N_GATEWAY && header->cl_flags & CL_RELAYED) { // Only broadcast to subnet if coming from relay
 			udp_send(message, message_len, header->name, header->uid, header->node_type, header->id, known_clients.size,
 				broadcast_ip, DEST_PORT, header->cl_flags ^ CL_RELAYED);
@@ -292,10 +292,10 @@ void connect_to_network(GtkWindow* parent) {
 			srand(time(NULL));
 			atomic_store(&node.id, rand() % UINT16_MAX);
 
-            if(!RAND_bytes((unsigned char*)node.uid, UID_LEN)){
-                fprintf(stderr, "Failed to generate a random UID\n");
-                exit(1);
-            }
+			if (!RAND_bytes((unsigned char*)node.uid, UID_LEN)) {
+				fprintf(stderr, "Failed to generate a random UID\n");
+				exit(1);
+			}
 
 			if (node.keypair) EVP_PKEY_free(node.keypair);
 			if (node.pubkey_pem) free(node.pubkey_pem);
@@ -383,13 +383,13 @@ void send_message(GtkWidget* widget, gpointer data) {
 		unsigned char* encrypted_keys[known_clients.size];
 		int encrypted_key_lens[known_clients.size];
 		char* client_names[known_clients.size];
-        char* client_uids[known_clients.size];
+		char* client_uids[known_clients.size];
 
 		client* cur = known_clients.head;
 		int idx = 0;
 		while (cur) {
 			client_names[idx] = cur->name; // Shouldn't we use strcpy?
-            client_uids[idx] = cur->uid;
+			client_uids[idx] = cur->uid;
 			encrypted_keys[idx] = malloc(EVP_PKEY_size(cur->pubkey));
 			int elen = encrypt_key_with_rsa(cur->pubkey, aes_key, AES_KEYLEN, encrypted_keys[idx]);
 			if (elen <= 0) {
@@ -402,12 +402,14 @@ void send_message(GtkWidget* widget, gpointer data) {
 
 		unsigned char buf[4096];
 		int pos = 0;
-		// [header]
-		// [iv]
-		// [name_len:uint8_t][name][uint16_t:uid][encrytpted_len:uint16_t][encrypted_key]
-		// ...
-		// [ciphertext_len:uint32_t][ciphertext]
 
+		/*
+			[header]
+			[iv]
+			[name_len:uint8_t][name][char[UID_LEN]:uid][encrytpted_len:uint16_t][encrypted_key]
+			...
+			[ciphertext_len:uint32_t][ciphertext]
+		*/
 		memcpy(buf + pos, aes_iv, AES_IVLEN);
 		pos += AES_IVLEN;
 
@@ -417,8 +419,8 @@ void send_message(GtkWidget* widget, gpointer data) {
 			pos += sizeof(name_len);
 			memcpy(buf + pos, client_names[i], name_len);
 			pos += name_len;
-            memcpy(buf+pos, client_uids[i], UID_LEN);
-            pos += UID_LEN;
+			memcpy(buf + pos, client_uids[i], UID_LEN);
+			pos += UID_LEN;
 
 			uint16_t eklen = encrypted_key_lens[i];
 			memcpy(buf + pos, &eklen, sizeof(eklen));
@@ -447,8 +449,8 @@ void send_message(GtkWidget* widget, gpointer data) {
 				CL_ENCRYPTED);
 		} else {
 			// TODO: Use spoofed ip
-			udp_send((const char*)buf, total_len, node.name,node.uid, node.type, atomic_fetch_add(&node.id, 1), known_clients.size,
-				broadcast_ip, DEST_PORT, CL_ENCRYPTED);
+			udp_send((const char*)buf, total_len, node.name, node.uid, node.type, atomic_fetch_add(&node.id, 1),
+				known_clients.size, broadcast_ip, DEST_PORT, CL_ENCRYPTED);
 		}
 
 		for (int i = 0; i < known_clients.size; ++i)
