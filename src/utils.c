@@ -1,6 +1,7 @@
 #include "utils.h"
 #include "libspoof.h"
 #include <bits/types.h>
+#include <openssl/aes.h>
 #include <openssl/bio.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
@@ -193,33 +194,41 @@ void* timer_thread(void* arg) {
 // --- Crypto ---
 
 // input: plaintext, output: ciphertext, plaintext_len: length of plaintext
-int encrypt_aes(const unsigned char* plaintext, int plaintext_len, const unsigned char* key, const unsigned char* iv,
-	unsigned char* ciphertext) {
+unsigned char* encrypt_aes(
+	const unsigned char* plaintext, int plaintext_len, const unsigned char* key, const unsigned char* iv, int* out_len) {
 	EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
-	if (!ctx) {
-		return -1;
-	}
-	int len, ciphertext_len;
+	if (!ctx) return NULL;
 
 	if (EVP_EncryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, key, iv) <= 0) {
 		EVP_CIPHER_CTX_free(ctx);
-		return -1;
+		return NULL;
 	}
 
+	int max_ciphertext_len = plaintext_len + AES_BLOCK_SIZE;
+	unsigned char* ciphertext = (unsigned char*)malloc(max_ciphertext_len);
+	if (!ciphertext) {
+		EVP_CIPHER_CTX_free(ctx);
+		return NULL;
+	}
+
+	int len, ciphertext_len;
 	if (EVP_EncryptUpdate(ctx, ciphertext, &len, plaintext, plaintext_len) <= 0) {
 		EVP_CIPHER_CTX_free(ctx);
-		return -1;
+		free(ciphertext);
+		return NULL;
 	}
 	ciphertext_len = len;
 
 	if (EVP_EncryptFinal_ex(ctx, ciphertext + len, &len) <= 0) {
 		EVP_CIPHER_CTX_free(ctx);
-		return -1;
+		free(ciphertext);
+		return NULL;
 	}
 	ciphertext_len += len;
 
 	EVP_CIPHER_CTX_free(ctx);
-	return ciphertext_len;
+	*out_len = ciphertext_len;
+	return ciphertext;
 }
 
 int decrypt_aes(const unsigned char* ciphertext, int ciphertext_len, const unsigned char* key, const unsigned char* iv,

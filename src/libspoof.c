@@ -3,6 +3,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <ifaddrs.h>
+#include <math.h>
 #include <net/if.h>
 #include <netinet/ip.h>
 #include <netinet/udp.h>
@@ -18,7 +19,7 @@
 
 #include "libspoof.h"
 
-#define PCKT_LEN 8192 // Buffer length. Note - This isn't how much data we're actually sending.
+#define MAX_FRAGMENT 16184 // MAX len of our fragments
 
 /* Checksum function */
 unsigned short csum(unsigned short* buf, int nwords) {
@@ -80,7 +81,7 @@ void* udp_receive_thread(void* arg) {
 	node_t* node = (node_t*)arg;
 	int sockfd;
 	struct sockaddr_in servaddr, cliaddr;
-	char buffer[RECV_BUF_SIZE];
+	char buffer[MAX_FRAGMENT + sizeof(header_t)];
 	socklen_t len = sizeof(cliaddr);
 
 	if ((sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
@@ -103,7 +104,7 @@ void* udp_receive_thread(void* arg) {
 	node->sock_listen = sockfd;
 
 	while (node->recv_running) {
-		ssize_t n = recvfrom(sockfd, buffer, RECV_BUF_SIZE - 1, 0, (struct sockaddr*)&cliaddr, &len);
+		ssize_t n = recvfrom(sockfd, buffer, sizeof(buffer) - 1, 0, (struct sockaddr*)&cliaddr, &len);
 		if (n > 0 && node->on_message) {
 			header_t* custom = (header_t*)buffer;
 			char* msg = (char*)(buffer + sizeof(header_t));
@@ -142,7 +143,7 @@ int stop_udp_receiver(node_t* node) {
 void udp_send_raw(const char* msg, uint16_t size, const char name[NAME_LEN], const char uid[UID_LEN], node_e n_type, uint16_t id,
 	uint8_t num_keys, char s_ip[INET_ADDRSTRLEN], char d_ip[INET_ADDRSTRLEN], uint16_t s_port, uint16_t d_port, enum cl_e flags) {
 	// Initialize variables.
-	char buffer[PCKT_LEN];
+	char buffer[MAX_FRAGMENT];
 
 	// Header pointers
 	struct iphdr* iphdr = (struct iphdr*)buffer;
@@ -154,14 +155,14 @@ void udp_send_raw(const char* msg, uint16_t size, const char name[NAME_LEN], con
 	int one = 1;
 
 	// Set packet buffer to 0's.
-	memset(buffer, 0, PCKT_LEN);
+	memset(buffer, 0, MAX_FRAGMENT);
 
 	custom_header->size = htons(sizeof(header_t) + size);
 	memcpy(custom_header->name, name, NAME_LEN);
 	memcpy(custom_header->uid, uid, UID_LEN);
 	custom_header->node_type = n_type;
-	custom_header->cl_flags = flags; // TODO: Needed for control messages
-	custom_header->id = id; // TODO: Needed for fragmentation
+	custom_header->cl_flags = flags; 
+	custom_header->id = id; 
 	custom_header->num_key = num_keys;
 	custom_header->frag_num = 0;
 	custom_header->total_fragments = 0;
@@ -230,27 +231,6 @@ void udp_send_raw(const char* msg, uint16_t size, const char name[NAME_LEN], con
 void udp_send(const char* msg, uint16_t size, const char name[NAME_LEN], const char uid[UID_LEN], node_e n_type, uint16_t id,
 	uint8_t num_keys, char d_ip[INET_ADDRSTRLEN], uint16_t d_port, enum cl_e flags) {
 
-	// Compose payload: header + message
-	char buffer[1024];
-	header_t* custom_header = (header_t*)buffer;
-
-	memset(buffer, 0, sizeof(buffer));
-
-	custom_header->size = htons(sizeof(header_t) + size);
-	memcpy(custom_header->name, name, NAME_LEN);
-	memcpy(custom_header->uid, uid, UID_LEN);
-	custom_header->node_type = n_type;
-	custom_header->cl_flags = flags;
-	custom_header->id = id;
-	custom_header->num_key = num_keys;
-	custom_header->frag_num = 0;
-	custom_header->total_fragments = 0;
-
-	char* pcktData = buffer + sizeof(header_t);
-	memcpy(pcktData, msg, size);
-
-	int payload_len = sizeof(header_t) + size;
-
 	// Setup UDP socket
 	int sockfd = socket(AF_INET, SOCK_DGRAM, 0);
 	if (sockfd < 0) {
@@ -265,16 +245,56 @@ void udp_send(const char* msg, uint16_t size, const char name[NAME_LEN], const c
 		return;
 	}
 
-	struct sockaddr_in dest;
-	memset(&dest, 0, sizeof(dest));
-	dest.sin_family = AF_INET;
-	dest.sin_port = htons(d_port);
-	dest.sin_addr.s_addr = inet_addr(d_ip);
+	int num_fragments = 0;
 
-	// Send UDP datagram
-	ssize_t sent = sendto(sockfd, buffer, payload_len, 0, (struct sockaddr*)&dest, sizeof(dest));
-	if (sent < 0) {
-		perror("sendto");
+	// divide the packet to as many fragments as necessary
+	// we need header in all fragments so ignore it
+	num_fragments = ceil((double)size / (double)MAX_FRAGMENT);
+	// printf("Need %d fragments for packet of size: %d\n", num_fragments, size);
+
+	int bytes_sent = 0;
+	int cur_send = 0;
+	for (int i = 0; i < num_fragments; ++i) {
+		// Compose payload: header + message
+		char buffer[MAX_FRAGMENT + sizeof(header_t)];
+		header_t* custom_header = (header_t*)buffer;
+
+		memset(buffer, 0, sizeof(buffer));
+
+		if (size-bytes_sent > MAX_FRAGMENT)
+			cur_send = MAX_FRAGMENT;
+		else // Last fragment
+			cur_send = size - bytes_sent;
+
+		custom_header->size = htons(cur_send);
+		memcpy(custom_header->name, name, NAME_LEN);
+		memcpy(custom_header->uid, uid, UID_LEN);
+		custom_header->node_type = n_type;
+		custom_header->cl_flags = flags;
+		custom_header->id = id;
+		custom_header->num_key = num_keys;
+		custom_header->frag_num = i;
+		custom_header->total_fragments = num_fragments;
+
+		// Actual message we are sending
+		char* pcktData = buffer + sizeof(header_t);
+		memcpy(pcktData, msg + bytes_sent, cur_send);
+
+		int payload_len = sizeof(header_t) + cur_send;
+
+		struct sockaddr_in dest;
+		memset(&dest, 0, sizeof(dest));
+		dest.sin_family = AF_INET;
+		dest.sin_port = htons(d_port);
+		dest.sin_addr.s_addr = inet_addr(d_ip);
+
+		// Send UDP datagram
+		ssize_t sent = sendto(sockfd, buffer, payload_len, 0, (struct sockaddr*)&dest, sizeof(dest));
+		if (sent < 0) {
+			perror("sendto");
+		}
+        // printf("sent: %zd bytes\n", sent);
+		bytes_sent += cur_send;
 	}
 
 	close(sockfd);

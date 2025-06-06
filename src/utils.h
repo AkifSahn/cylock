@@ -77,8 +77,8 @@ void* timer_thread(void* arg);
 #define AES_KEYLEN 32 // 256 bits
 #define AES_IVLEN 16 // For AES-CBC
 
-int encrypt_aes(const unsigned char* plaintext, int plaintext_len, const unsigned char* key, const unsigned char* iv,
-	unsigned char* ciphertext);
+unsigned char* encrypt_aes(const unsigned char* plaintext, int plaintext_len, const unsigned char* key, const unsigned char* iv,
+	int* out_len);
 int decrypt_aes(const unsigned char* ciphertext, int ciperhtext_len, const unsigned char* key, const unsigned char* iv,
 	unsigned char* plaintext);
 

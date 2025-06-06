@@ -15,7 +15,6 @@ typedef enum {
 } node_e;
 
 #define RECV_PORT 6969
-#define RECV_BUF_SIZE 2048
 
 #define NAME_LEN 32
 #define UID_LEN 8

@@ -1,4 +1,5 @@
 #include <gtk/gtk.h>
+#include <openssl/aes.h>
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <openssl/rand.h>
@@ -10,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -24,7 +26,7 @@ GtkWidget* statusbar;
 guint context_id;
 GtkWidget* user_list;
 
-char nickname[64] = "Anonymous";
+char nickname[NAME_LEN] = "Anonymous";
 gboolean connected = FALSE;
 char node_mode[16] = "Client";
 
@@ -98,7 +100,7 @@ unsigned char* decrypt_incoming_message(const char* buffer, const int cipher_len
 		memcpy(&name_len, buffer + pos, sizeof(uint8_t));
 		pos += sizeof(uint8_t);
 
-		unsigned char* key_name = (unsigned char*)malloc(name_len * sizeof(unsigned char));
+		unsigned char* key_name = (unsigned char*)malloc((name_len + 1) * sizeof(unsigned char));
 		memcpy(key_name, buffer + pos, name_len * sizeof(unsigned char));
 		key_name[name_len] = '\0';
 		pos += sizeof(unsigned char) * name_len;
@@ -143,8 +145,7 @@ unsigned char* decrypt_incoming_message(const char* buffer, const int cipher_len
 	memcpy(ciphertext, buffer + pos, ciphertext_len * sizeof(unsigned char));
 	pos += ciphertext_len * sizeof(unsigned char);
 
-	// TODO: decide on maximum message size
-	unsigned char* plaintext = malloc(2048 * sizeof(unsigned char));
+	unsigned char* plaintext = malloc(ciphertext_len * sizeof(unsigned char));
 	*plaintextlen = decrypt_aes(ciphertext, ciphertext_len, decrypted_key, aes_iv, plaintext);
 
 	free(ciphertext);
@@ -193,6 +194,7 @@ void gui_message_callback(const header_t* header, const char* message, int messa
 			= decrypt_incoming_message(message, message_len, node.name, header->num_key, node.keypair, &msg_len);
 		if (dec_msg && msg_len > 0) {
 			// Show decrypted message
+			printf("received msg_len is: %d\n", msg_len);
 			msg_str = g_strdup_printf("%s: %.*s", header->name, msg_len, dec_msg);
 			free(dec_msg);
 		} else {
@@ -374,12 +376,30 @@ void send_message(GtkWidget* widget, gpointer data) {
 			return;
 		}
 
-		unsigned char ciphertext[4096]; // adjust size as needed
-		int ciphertext_len = encrypt_aes((unsigned char*)msg, strlen(msg), aes_key, aes_iv, ciphertext);
-		if (ciphertext_len <= 0) {
+		int total_size = 0; // Total buffer size
+		total_size += AES_IVLEN;
+		total_size += sizeof(uint8_t) * known_clients.size; // name_len field
+		total_size += UID_LEN; // UID field
+		total_size += sizeof(uint16_t) * known_clients.size; // encrypted_len field
+		total_size += sizeof(uint32_t); // ciphertext_len field
+
+		// Needs to be dynamicly sized!
+		int ciphertext_len;
+		unsigned char* ciphertext = encrypt_aes((unsigned char*)msg, strlen(msg), aes_key, aes_iv, &ciphertext_len);
+		total_size += ciphertext_len;
+
+		if (!ciphertext || ciphertext_len <= 0) {
 			fprintf(stderr, "Failed to encrypt message\n");
 			return;
 		}
+		/*
+		   [header]
+		   [iv]
+		   [name_len:uint8_t][name][char[UID_LEN]:uid][encrytpted_len:uint16_t][encrypted_key]
+		   ...
+		   [ciphertext_len:uint32_t][ciphertext]
+		   */
+
 		unsigned char* encrypted_keys[known_clients.size];
 		int encrypted_key_lens[known_clients.size];
 		char* client_names[known_clients.size];
@@ -389,27 +409,23 @@ void send_message(GtkWidget* widget, gpointer data) {
 		int idx = 0;
 		while (cur) {
 			client_names[idx] = cur->name; // Shouldn't we use strcpy?
+			total_size += strlen(cur->name);
 			client_uids[idx] = cur->uid;
 			encrypted_keys[idx] = malloc(EVP_PKEY_size(cur->pubkey));
 			int elen = encrypt_key_with_rsa(cur->pubkey, aes_key, AES_KEYLEN, encrypted_keys[idx]);
 			if (elen <= 0) {
 				fprintf(stderr, "Failed to encrypt AES keys using RSA of '%s'\n", cur->name), free(encrypted_keys[idx]);
 			}
+			total_size += elen;
+
 			encrypted_key_lens[idx] = elen;
 			cur = cur->next;
 			idx++;
 		}
 
-		unsigned char buf[4096];
+		unsigned char buf[total_size];
 		int pos = 0;
 
-		/*
-			[header]
-			[iv]
-			[name_len:uint8_t][name][char[UID_LEN]:uid][encrytpted_len:uint16_t][encrypted_key]
-			...
-			[ciphertext_len:uint32_t][ciphertext]
-		*/
 		memcpy(buf + pos, aes_iv, AES_IVLEN);
 		pos += AES_IVLEN;
 
@@ -435,7 +451,10 @@ void send_message(GtkWidget* widget, gpointer data) {
 		memcpy(buf + pos, ciphertext, clen);
 		pos += clen;
 
+		free(ciphertext);
+
 		int total_len = pos;
+		printf("Calculated total_len %d\nReal total_len %d\n", total_size, total_len);
 
 		// If gateway, send the message to the other gateways on the gateway_ips.txt list.
 		// Don't spoof the ip source when sending to other gateways
