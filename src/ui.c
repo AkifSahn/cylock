@@ -1,3 +1,5 @@
+#include <dirent.h>
+#include <errno.h>
 #include <gtk/gtk.h>
 #include <openssl/aes.h>
 #include <openssl/crypto.h>
@@ -7,6 +9,7 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -156,9 +159,10 @@ unsigned char* decrypt_incoming_message(const char* buffer, const int cipher_len
 fragments fragments_cache;
 
 // GTK thread-safe message post
-void gui_message_callback(const header_t* header, const char* message, int message_len) {
+void gui_message_callback(const header_t* header, const char* message, size_t message_len) {
 	// Drop the message, we seen it before
 	const char* payload;
+
 	if (header->total_fragments > 1) {
 		printf("received fragment: %d\n", header->frag_num);
 		fragment* frag = new_fragment(
@@ -211,9 +215,27 @@ void gui_message_callback(const header_t* header, const char* message, int messa
 		unsigned char* dec_msg
 			= decrypt_incoming_message(payload, message_len, node.name, header->num_key, node.keypair, &msg_len);
 		if (dec_msg && msg_len > 0) {
-			msg_str = g_strdup_printf("%s: %.*s", header->name, msg_len, dec_msg);
+			if (header->cl_flags & CL_FILE) {
+				FILE* fp = fopen(header->filename, "wb");
+				printf("    filename is '%s'\n", header->filename);
+				if (!fp) {
+					fprintf(stderr, "Failed to open file for writing\n");
+					free(dec_msg);
+					return;
+				}
+				if (fwrite(dec_msg, 1, msg_len, fp) <= 0) {
+					fprintf(stderr, "Failed to write to file\n");
+					free(dec_msg);
+					fclose(fp);
+					return;
+				}
+				fclose(fp);
+			} else {
+				msg_str = g_strdup_printf("%s: %.*s", header->name, msg_len, dec_msg);
+			}
 			free(dec_msg);
 		} else {
+			fprintf(stderr, "Failed to decrypt!\n");
 			// Failed to decrypt a message
 		}
 	}
@@ -226,11 +248,11 @@ void gui_message_callback(const header_t* header, const char* message, int messa
 	if (node.type == N_GATEWAY) {
 		if (header->node_type == N_GATEWAY && header->cl_flags & CL_RELAYED) { // Only broadcast to subnet if coming from relay
 			udp_send(payload, message_len, header->name, header->uid, header->node_type, header->id, known_clients.size,
-				broadcast_ip, DEST_PORT, header->cl_flags ^ CL_RELAYED);
+				broadcast_ip, DEST_PORT, header->cl_flags ^ CL_RELAYED, NULL);
 		}
 		for (int i = 0; i < num_gw_ips; ++i) {
 			udp_send(payload, message_len, header->name, header->uid, header->node_type, header->id, known_clients.size,
-				gateway_ips[i], DEST_PORT, header->cl_flags | CL_RELAYED);
+				gateway_ips[i], DEST_PORT, header->cl_flags | CL_RELAYED, NULL);
 		}
 	}
 }
@@ -246,13 +268,13 @@ timer_event* awake_event;
 void* timer_awake(void* arg) {
 	node_t* node = (node_t*)arg;
 	int id = atomic_fetch_add(&node->id, 1);
-	udp_send(
-		node->pubkey_pem, strlen(node->pubkey_pem), node->name, node->uid, node->type, id, 0, broadcast_ip, DEST_PORT, CL_ALIVE);
+	udp_send(node->pubkey_pem, strlen(node->pubkey_pem), node->name, node->uid, node->type, id, 0, broadcast_ip, DEST_PORT,
+		CL_ALIVE, NULL);
 
 	if (node->type == N_GATEWAY) {
 		for (int i = 0; i < num_gw_ips; ++i) {
 			udp_send(node->pubkey_pem, strlen(node->pubkey_pem), node->name, node->uid, node->type, id, known_clients.size,
-				gateway_ips[i], DEST_PORT, CL_RELAYED | CL_ALIVE);
+				gateway_ips[i], DEST_PORT, CL_RELAYED | CL_ALIVE, NULL);
 		}
 	}
 	return NULL;
@@ -331,7 +353,7 @@ void connect_to_network(GtkWindow* parent) {
 				fragments_cache.size = 0;
 				usleep(100);
 				udp_send(node.pubkey_pem, strlen(node.pubkey_pem), node.name, node.uid, node.type, atomic_fetch_add(&node.id, 1),
-					0, broadcast_ip, DEST_PORT, CL_CONNECTED);
+					0, broadcast_ip, DEST_PORT, CL_CONNECTED, NULL);
 			}
 		}
 	}
@@ -372,6 +394,99 @@ void show_about(GtkWindow* parent) {
 	gtk_widget_destroy(dialog);
 }
 
+/*
+   [header]
+   [iv]
+   [name_len:uint8_t][name][char[UID_LEN]:uid][encrytpted_len:uint16_t][encrypted_key]
+   ...
+   [ciphertext_len:uint32_t][ciphertext]
+*/
+unsigned char* encrypt_outgoing_message(const char* msg, size_t msg_len, size_t* out_len) {
+	// Generate AES key, encrypt message, encrypt AES key for each client
+	unsigned char aes_key[AES_KEYLEN];
+	unsigned char aes_iv[AES_IVLEN];
+
+	if (!RAND_bytes(aes_key, sizeof(aes_key)) || !RAND_bytes(aes_iv, sizeof(aes_iv))) {
+		fprintf(stderr, "Failed to generate secure random AES key!\n");
+		return NULL;
+	}
+
+	int total_size = 0; // Total buffer size
+	total_size += AES_IVLEN;
+	total_size += sizeof(uint8_t) * known_clients.size; // name_len field
+	total_size += UID_LEN; // UID field
+	total_size += sizeof(uint16_t) * known_clients.size; // encrypted_len field
+	total_size += sizeof(uint32_t); // ciphertext_len field
+
+	// Needs to be dynamicly sized!
+	int ciphertext_len;
+	unsigned char* ciphertext = encrypt_aes((unsigned char*)msg, msg_len, aes_key, aes_iv, &ciphertext_len);
+	total_size += ciphertext_len;
+
+	if (!ciphertext || ciphertext_len <= 0) {
+		fprintf(stderr, "Failed to encrypt message\n");
+		return NULL;
+	}
+
+	unsigned char* encrypted_keys[known_clients.size];
+	int encrypted_key_lens[known_clients.size];
+	char* client_names[known_clients.size];
+	char* client_uids[known_clients.size];
+
+	client* cur = known_clients.head;
+	int idx = 0;
+	while (cur) {
+		client_names[idx] = cur->name; // Shouldn't we use strcpy?
+		total_size += strlen(cur->name);
+		client_uids[idx] = cur->uid;
+		encrypted_keys[idx] = malloc(EVP_PKEY_size(cur->pubkey));
+		int elen = encrypt_key_with_rsa(cur->pubkey, aes_key, AES_KEYLEN, encrypted_keys[idx]);
+		if (elen <= 0) {
+			fprintf(stderr, "Failed to encrypt AES keys using RSA of '%s'\n", cur->name), free(encrypted_keys[idx]);
+		}
+		total_size += elen;
+
+		encrypted_key_lens[idx] = elen;
+		cur = cur->next;
+		idx++;
+	}
+
+	unsigned char* buf = malloc(total_size * sizeof(unsigned char));
+	int pos = 0;
+
+	memcpy(buf + pos, aes_iv, AES_IVLEN);
+	pos += AES_IVLEN;
+
+	for (int i = 0; i < known_clients.size; ++i) {
+		uint8_t name_len = strlen(client_names[i]);
+		memcpy(buf + pos, &name_len, sizeof(name_len));
+		pos += sizeof(name_len);
+		memcpy(buf + pos, client_names[i], name_len);
+		pos += name_len;
+		memcpy(buf + pos, client_uids[i], UID_LEN);
+		pos += UID_LEN;
+
+		uint16_t eklen = encrypted_key_lens[i];
+		memcpy(buf + pos, &eklen, sizeof(eklen));
+		pos += sizeof(eklen);
+		memcpy(buf + pos, encrypted_keys[i], eklen);
+		pos += eklen;
+	}
+
+	uint32_t clen = ciphertext_len;
+	memcpy(buf + pos, &clen, sizeof(clen));
+	pos += sizeof(clen);
+	memcpy(buf + pos, ciphertext, clen);
+	pos += clen;
+
+	free(ciphertext);
+	for (int i = 0; i < known_clients.size; ++i)
+		free(encrypted_keys[i]);
+
+	*out_len = pos;
+	return buf;
+}
+
 // Send button callback
 void send_message(GtkWidget* widget, gpointer data) {
 	const gchar* msg = gtk_entry_get_text(GTK_ENTRY(entry));
@@ -384,93 +499,12 @@ void send_message(GtkWidget* widget, gpointer data) {
 			return;
 		}
 
-		// Generate AES key, encrypt message, encrypt AES key for each client
-		unsigned char aes_key[AES_KEYLEN];
-		unsigned char aes_iv[AES_IVLEN];
-
-		if (!RAND_bytes(aes_key, sizeof(aes_key)) || !RAND_bytes(aes_iv, sizeof(aes_iv))) {
-			fprintf(stderr, "Failed to generate secure random AES key!\n");
+		size_t total_len = 0;
+		unsigned char* buf = encrypt_outgoing_message(msg, strlen(msg), &total_len);
+		if (!buf || total_len <= 0) {
+			fprintf(stderr, "Failed to encrypt outgoing message");
 			return;
 		}
-
-		int total_size = 0; // Total buffer size
-		total_size += AES_IVLEN;
-		total_size += sizeof(uint8_t) * known_clients.size; // name_len field
-		total_size += UID_LEN; // UID field
-		total_size += sizeof(uint16_t) * known_clients.size; // encrypted_len field
-		total_size += sizeof(uint32_t); // ciphertext_len field
-
-		// Needs to be dynamicly sized!
-		int ciphertext_len;
-		unsigned char* ciphertext = encrypt_aes((unsigned char*)msg, strlen(msg), aes_key, aes_iv, &ciphertext_len);
-		total_size += ciphertext_len;
-
-		if (!ciphertext || ciphertext_len <= 0) {
-			fprintf(stderr, "Failed to encrypt message\n");
-			return;
-		}
-		/*
-		   [header]
-		   [iv]
-		   [name_len:uint8_t][name][char[UID_LEN]:uid][encrytpted_len:uint16_t][encrypted_key]
-		   ...
-		   [ciphertext_len:uint32_t][ciphertext]
-		   */
-
-		unsigned char* encrypted_keys[known_clients.size];
-		int encrypted_key_lens[known_clients.size];
-		char* client_names[known_clients.size];
-		char* client_uids[known_clients.size];
-
-		client* cur = known_clients.head;
-		int idx = 0;
-		while (cur) {
-			client_names[idx] = cur->name; // Shouldn't we use strcpy?
-			total_size += strlen(cur->name);
-			client_uids[idx] = cur->uid;
-			encrypted_keys[idx] = malloc(EVP_PKEY_size(cur->pubkey));
-			int elen = encrypt_key_with_rsa(cur->pubkey, aes_key, AES_KEYLEN, encrypted_keys[idx]);
-			if (elen <= 0) {
-				fprintf(stderr, "Failed to encrypt AES keys using RSA of '%s'\n", cur->name), free(encrypted_keys[idx]);
-			}
-			total_size += elen;
-
-			encrypted_key_lens[idx] = elen;
-			cur = cur->next;
-			idx++;
-		}
-
-		unsigned char buf[total_size];
-		int pos = 0;
-
-		memcpy(buf + pos, aes_iv, AES_IVLEN);
-		pos += AES_IVLEN;
-
-		for (int i = 0; i < known_clients.size; ++i) {
-			uint8_t name_len = strlen(client_names[i]);
-			memcpy(buf + pos, &name_len, sizeof(name_len));
-			pos += sizeof(name_len);
-			memcpy(buf + pos, client_names[i], name_len);
-			pos += name_len;
-			memcpy(buf + pos, client_uids[i], UID_LEN);
-			pos += UID_LEN;
-
-			uint16_t eklen = encrypted_key_lens[i];
-			memcpy(buf + pos, &eklen, sizeof(eklen));
-			pos += sizeof(eklen);
-			memcpy(buf + pos, encrypted_keys[i], eklen);
-			pos += eklen;
-		}
-
-		uint32_t clen = ciphertext_len;
-		memcpy(buf + pos, &clen, sizeof(clen));
-		pos += sizeof(clen);
-		memcpy(buf + pos, ciphertext, clen);
-		pos += clen;
-
-		free(ciphertext);
-
-		int total_len = pos;
 
 		// If gateway, send the message to the other gateways on the gateway_ips.txt list.
 		// Don't spoof the ip source when sending to other gateways
@@ -478,21 +512,90 @@ void send_message(GtkWidget* widget, gpointer data) {
 			uint16_t id = atomic_fetch_add(&node.id, 1);
 			for (int i = 0; i < num_gw_ips; ++i) {
 				udp_send((const char*)buf, total_len, node.name, node.uid, node.type, id, known_clients.size, gateway_ips[i],
-					DEST_PORT, CL_RELAYED | CL_ENCRYPTED);
+					DEST_PORT, CL_RELAYED | CL_ENCRYPTED, NULL);
 			}
 			udp_send((const char*)buf, total_len, node.name, node.uid, node.type, id, known_clients.size, broadcast_ip, DEST_PORT,
-				CL_ENCRYPTED);
+				CL_ENCRYPTED, NULL);
 		} else {
 			// TODO: Use spoofed ip
 			udp_send((const char*)buf, total_len, node.name, node.uid, node.type, atomic_fetch_add(&node.id, 1),
-				known_clients.size, broadcast_ip, DEST_PORT, CL_ENCRYPTED);
+				known_clients.size, broadcast_ip, DEST_PORT, CL_ENCRYPTED, NULL);
 		}
-
-		for (int i = 0; i < known_clients.size; ++i)
-			free(encrypted_keys[i]);
 
 		gtk_entry_set_text(GTK_ENTRY(entry), "");
 	}
+}
+
+void send_file_dialog(GtkWidget* widget, gpointer data) {
+	if (!connected) {
+		GtkWidget* dialog = gtk_message_dialog_new(
+			NULL, GTK_DIALOG_MODAL, GTK_MESSAGE_WARNING, GTK_BUTTONS_OK, "Please connect to the network first!");
+		gtk_dialog_run(GTK_DIALOG(dialog));
+		gtk_widget_destroy(dialog);
+		return;
+	}
+
+	GtkWidget* dialog;
+	dialog = gtk_file_chooser_dialog_new("Select File", GTK_WINDOW(data), GTK_FILE_CHOOSER_ACTION_OPEN, "_Cancel",
+		GTK_RESPONSE_CANCEL, "_Open", GTK_RESPONSE_ACCEPT, NULL);
+
+	if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
+		char* filepath;
+		GtkFileChooser* chooser = GTK_FILE_CHOOSER(dialog);
+		filepath = gtk_file_chooser_get_filename(chooser);
+
+		// Read and send file
+		FILE* fp = fopen(filepath, "rb");
+		if (!fp) {
+			fprintf(stderr, "Failed to open file - %s\n", strerror(errno));
+			return;
+		}
+
+		fseek(fp, 0, SEEK_END);
+		size_t filesize = ftell(fp);
+		rewind(fp);
+
+		unsigned char* filebuf = malloc(filesize);
+		if (!filebuf) {
+			fprintf(stderr, "Failed to allocate file buffer\n");
+			fclose(fp);
+			return;
+		}
+		fread(filebuf, 1, filesize, fp);
+		fclose(fp);
+
+		printf("total len of file: %zu\n", filesize);
+
+		const char* filename = strrchr(filepath, '/');
+		filename = filename ? filename + 1 : filepath;
+
+		size_t total_len = 0;
+		unsigned char* buf = encrypt_outgoing_message((char*)filebuf, filesize, &total_len);
+		if (!buf || total_len <= 0) {
+			fprintf(stderr, "Failed to encryprt file\n");
+			g_free(filepath);
+			return;
+		}
+
+		// If gateway, send the message to the other gateways on the gateway_ips.txt list.
+		// Don't spoof the ip source when sending to other gateways
+		if (node.type == N_GATEWAY) {
+			uint16_t id = atomic_fetch_add(&node.id, 1);
+			for (int i = 0; i < num_gw_ips; ++i) {
+				udp_send((const char*)buf, total_len, node.name, node.uid, node.type, id, known_clients.size, gateway_ips[i],
+					DEST_PORT, CL_RELAYED | CL_ENCRYPTED | CL_FILE, filename);
+			}
+			udp_send((const char*)buf, total_len, node.name, node.uid, node.type, id, known_clients.size, broadcast_ip, DEST_PORT,
+				CL_ENCRYPTED | CL_FILE, filename);
+		} else {
+			// TODO: Use spoofed ip
+			udp_send((const char*)buf, total_len, node.name, node.uid, node.type, atomic_fetch_add(&node.id, 1),
+				known_clients.size, broadcast_ip, DEST_PORT, CL_ENCRYPTED | CL_FILE, filename);
+		}
+
+		g_free(filepath);
+	}
+	gtk_widget_destroy(dialog);
 }
 
 // Menu Callbacks
@@ -644,12 +747,20 @@ int main(int argc, char* argv[]) {
 	GtkWidget* hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
 	entry = gtk_entry_new();
 	gtk_box_pack_start(GTK_BOX(hbox), entry, TRUE, TRUE, 2);
+
 	GtkWidget* send_btn = gtk_button_new_with_label("Send");
 	gtk_box_pack_start(GTK_BOX(hbox), send_btn, FALSE, FALSE, 2);
+
+	// NEW: Add file send button
+	GtkWidget* send_file_btn = gtk_button_new_with_label("Send File");
+	gtk_box_pack_start(GTK_BOX(hbox), send_file_btn, FALSE, FALSE, 2);
+
 	gtk_box_pack_start(GTK_BOX(chat_vbox), hbox, FALSE, FALSE, 2);
 
 	g_signal_connect(send_btn, "clicked", G_CALLBACK(send_message), window);
 	g_signal_connect(entry, "activate", G_CALLBACK(send_message), window);
+	// Connect new file send button
+	g_signal_connect(send_file_btn, "clicked", G_CALLBACK(send_file_dialog), window);
 
 	// Add chat_vbox (left side) to hbox_main
 	gtk_box_pack_start(GTK_BOX(hbox_main), chat_vbox, TRUE, TRUE, 2);

@@ -9,6 +9,7 @@
 
 #include <openssl/types.h>
 #include <pthread.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <sys/types.h>
 
@@ -78,7 +79,7 @@ typedef struct {
 	uint16_t id; // Packet id of fragments
 	unsigned char* head; // Allocate at most num_frag * MAX_FRAG bytes
 	int frag_received; // How many fragments we received
-	int size;
+	size_t size;
 } fragment;
 
 typedef struct {
