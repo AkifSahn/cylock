@@ -216,6 +216,13 @@ fragment* new_fragment(
 		memset(frag->head, 0, total_fragments * MAX_FRAGMENT);
 	}
 
+    // We already placed this
+    if (!memcmp(frag->head+MAX_FRAGMENT*frag_num, frag_head, size)){
+        return NULL;
+    }
+    printf("new_fragment:\n");
+    printf("    frag: %d\n", frag_num);
+
 	memcpy(frag->head + MAX_FRAGMENT * frag_num, frag_head, size); // Put new fragment to its place
 	frag->frag_received += 1;
 	frag->size += size;

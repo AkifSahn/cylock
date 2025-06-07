@@ -301,3 +301,48 @@ void udp_send(const char* msg, size_t size, const char name[NAME_LEN], const cha
 
 	close(sockfd);
 }
+
+void udp_relay(
+	const char* msg, size_t size, const header_t* header, char d_ip[INET_ADDRSTRLEN], uint16_t d_port, enum cl_e flags) {
+
+	// Setup UDP socket
+	int sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+	if (sockfd < 0) {
+		perror("socket");
+		exit(EXIT_FAILURE);
+	}
+
+	int broadcast = 1;
+	if (setsockopt(sockfd, SOL_SOCKET, SO_BROADCAST, &broadcast, sizeof(broadcast)) < 0) {
+		perror("setsockopt");
+		close(sockfd);
+		return;
+	}
+
+	char buffer[header->size + sizeof(header_t)];
+	header_t* custom_header = (header_t*)buffer;
+
+	memset(buffer, 0, sizeof(buffer));
+
+	memcpy(custom_header, header, sizeof(header_t));
+
+	// Actual message we are sending
+	char* pcktData = buffer + sizeof(header_t);
+	memcpy(pcktData, msg, header->size);
+
+	int payload_len = sizeof(header_t) + header->size;
+
+	struct sockaddr_in dest;
+	memset(&dest, 0, sizeof(dest));
+	dest.sin_family = AF_INET;
+	dest.sin_port = htons(d_port);
+	dest.sin_addr.s_addr = inet_addr(d_ip);
+
+	// Send UDP datagram
+	ssize_t sent = sendto(sockfd, buffer, payload_len, 0, (struct sockaddr*)&dest, sizeof(dest));
+	if (sent < 0) {
+		perror("sendto");
+	}
+
+	close(sockfd);
+}

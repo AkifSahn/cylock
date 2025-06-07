@@ -44,7 +44,7 @@ char local_ip[INET_ADDRSTRLEN];
 char broadcast_ip[INET_ADDRSTRLEN];
 
 // in microsecond
-#define NOTIFY_EVENT_TIMER 100000000
+#define NOTIFY_EVENT_TIMER 5000000
 // In microsecond
 #define PRUNE_EVENT_TIMER 60000000
 // in second
@@ -160,11 +160,23 @@ fragments fragments_cache;
 
 // GTK thread-safe message post
 void gui_message_callback(const header_t* header, const char* message, size_t message_len) {
-	// Drop the message, we seen it before
+
+	// Drop any packet that orignated from us
+	if (!strcmp(header->name, node.name) && !memcmp(header->uid, node.uid, UID_LEN)) {
+		return;
+	}
+
 	const char* payload;
 
+	if (header->cl_flags & CL_FILE) {
+		printf("receive:\n");
+		printf("    from: %s\n", header->name);
+		printf("    packet id: %d\n", header->id);
+		printf("    fragment num: %d\n", header->frag_num);
+		printf("    total fragments: %d\n", header->total_fragments);
+	}
+
 	if (header->total_fragments > 1) {
-		printf("received fragment: %d\n", header->frag_num);
 		fragment* frag = new_fragment(
 			&fragments_cache, (unsigned char*)message, header->id, header->frag_num, header->total_fragments, header->size);
 		if (frag) {
@@ -247,12 +259,10 @@ void gui_message_callback(const header_t* header, const char* message, size_t me
 	// Relay any incoming message
 	if (node.type == N_GATEWAY) {
 		if (header->node_type == N_GATEWAY && header->cl_flags & CL_RELAYED) { // Only broadcast to subnet if coming from relay
-			udp_send(payload, message_len, header->name, header->uid, header->node_type, header->id, known_clients.size,
-				broadcast_ip, DEST_PORT, header->cl_flags ^ CL_RELAYED, NULL);
+			udp_relay(payload, message_len, header, broadcast_ip, DEST_PORT, header->cl_flags ^ CL_RELAYED);
 		}
 		for (int i = 0; i < num_gw_ips; ++i) {
-			udp_send(payload, message_len, header->name, header->uid, header->node_type, header->id, known_clients.size,
-				gateway_ips[i], DEST_PORT, header->cl_flags | CL_RELAYED, NULL);
+			udp_relay(payload, message_len, header, gateway_ips[i], DEST_PORT, header->cl_flags ^ CL_RELAYED);
 		}
 	}
 }
@@ -490,6 +500,8 @@ unsigned char* encrypt_outgoing_message(const char* msg, size_t msg_len, size_t*
 // Send button callback
 void send_message(GtkWidget* widget, gpointer data) {
 	const gchar* msg = gtk_entry_get_text(GTK_ENTRY(entry));
+	char* msg_str = g_strdup_printf("You: %s", msg);
+	g_idle_add(show_incoming_message, msg_str);
 	if (msg && strlen(msg) > 0) {
 		if (!connected) {
 			GtkWidget* dialog = gtk_message_dialog_new(

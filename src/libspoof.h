@@ -14,7 +14,7 @@ typedef enum {
 	N_GATEWAY,
 } node_e;
 
-#define MAX_FRAGMENT 48552 // 16184 // MAX len of our fragments
+#define MAX_FRAGMENT 1500// 48552 // 16184 // MAX len of our fragments
 #define RECV_PORT 6969
 
 #define NAME_LEN 32
@@ -83,5 +83,7 @@ void udp_send_raw(const char* msg, size_t size, const char name[NAME_LEN], const
 
 void udp_send(const char* msg, size_t size, const char name[NAME_LEN], const char uid[UID_LEN], node_e n_type, uint16_t id,
 	uint8_t num_keys, char d_ip[INET_ADDRSTRLEN], uint16_t d_port, enum cl_e flags, const char filename[FILENAME_LEN]);
+
+void udp_relay(const char* msg, size_t size, const header_t* header, char d_ip[INET_ADDRSTRLEN], uint16_t d_port, enum cl_e flags);
 
 #endif
