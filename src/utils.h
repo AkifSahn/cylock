@@ -72,13 +72,29 @@ void* timer_thread(void* arg);
 
 // --- ### ---
 
+// --- Fragment handling ---
+
+typedef struct {
+	uint16_t id; // Packet id of fragments
+	unsigned char* head; // Allocate at most num_frag * MAX_FRAG bytes
+	int frag_received; // How many fragments we received
+	int size;
+} fragment;
+
+typedef struct {
+	fragment* fragments[10]; // 10 fragments at cache at most
+	uint8_t size;
+} fragments;
+
+fragment* new_fragment(
+	fragments* fragments, const unsigned char* frag_head, uint16_t id, int frag_num, int total_fragments, int size);
 // --- Crypto ---
 
 #define AES_KEYLEN 32 // 256 bits
 #define AES_IVLEN 16 // For AES-CBC
 
-unsigned char* encrypt_aes(const unsigned char* plaintext, int plaintext_len, const unsigned char* key, const unsigned char* iv,
-	int* out_len);
+unsigned char* encrypt_aes(
+	const unsigned char* plaintext, int plaintext_len, const unsigned char* key, const unsigned char* iv, int* out_len);
 int decrypt_aes(const unsigned char* ciphertext, int ciperhtext_len, const unsigned char* key, const unsigned char* iv,
 	unsigned char* plaintext);
 

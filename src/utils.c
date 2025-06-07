@@ -1,12 +1,14 @@
 #include "utils.h"
 #include "libspoof.h"
 #include <bits/types.h>
+
 #include <openssl/aes.h>
 #include <openssl/bio.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
 #include <pthread.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -189,7 +191,43 @@ void* timer_thread(void* arg) {
 	return NULL;
 }
 
-// --- ### ---
+// --- Fragment Handling ---
+
+fragment* new_fragment(
+	fragments* fragments, const unsigned char* frag_head, uint16_t id, int frag_num, int total_fragments, int size) {
+	// Search the fragments for id
+	fragment* frag = NULL;
+	for (int i = 0; i < fragments->size; ++i) {
+		if (fragments->fragments[i]->id == id) {
+			frag = fragments->fragments[i];
+			break;
+		}
+	}
+
+	// initialize a new fragment
+	// TODO: What happens same fragment arrives multiple times???
+	if (!frag) {
+		frag = malloc(sizeof(fragment));
+		frag->id = id;
+		frag->frag_received = 0;
+		frag->size = 0;
+		frag->head = malloc(total_fragments * MAX_FRAGMENT); // max size of our assembled fragments
+		fragments->fragments[fragments->size++] = frag;
+		memset(frag->head, 0, total_fragments * MAX_FRAGMENT);
+	}
+
+	memcpy(frag->head + MAX_FRAGMENT * frag_num, frag_head, size); // Put new fragment to its place
+	frag->frag_received += 1;
+	frag->size += size;
+	// printf("    frag received: %d\n    total frag: %d\n", frag->frag_received, total_fragments);
+	if (frag->frag_received == total_fragments) { // We received all the fragments
+		unsigned char* head = frag->head;
+		fragments->size--;
+		return frag; // Caller should free the fragment and frag.head
+	}
+
+	return NULL;
+}
 
 // --- Crypto ---
 

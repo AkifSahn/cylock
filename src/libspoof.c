@@ -5,6 +5,7 @@
 #include <ifaddrs.h>
 #include <math.h>
 #include <net/if.h>
+#include <netinet/in.h>
 #include <netinet/ip.h>
 #include <netinet/udp.h>
 #include <stdint.h>
@@ -18,8 +19,6 @@
 #include <unistd.h>
 
 #include "libspoof.h"
-
-#define MAX_FRAGMENT 16184 // MAX len of our fragments
 
 /* Checksum function */
 unsigned short csum(unsigned short* buf, int nwords) {
@@ -104,11 +103,12 @@ void* udp_receive_thread(void* arg) {
 	node->sock_listen = sockfd;
 
 	while (node->recv_running) {
-		ssize_t n = recvfrom(sockfd, buffer, sizeof(buffer) - 1, 0, (struct sockaddr*)&cliaddr, &len);
+		ssize_t n = recvfrom(sockfd, buffer, sizeof(buffer), 0, (struct sockaddr*)&cliaddr, &len);
 		if (n > 0 && node->on_message) {
 			header_t* custom = (header_t*)buffer;
 			char* msg = (char*)(buffer + sizeof(header_t));
 			int msg_len = n - sizeof(header_t);
+			custom->size = ntohs(custom->size);
 			node->on_message(custom, msg, msg_len); // callback to GUI
 		}
 	}
@@ -161,8 +161,8 @@ void udp_send_raw(const char* msg, uint16_t size, const char name[NAME_LEN], con
 	memcpy(custom_header->name, name, NAME_LEN);
 	memcpy(custom_header->uid, uid, UID_LEN);
 	custom_header->node_type = n_type;
-	custom_header->cl_flags = flags; 
-	custom_header->id = id; 
+	custom_header->cl_flags = flags;
+	custom_header->id = id;
 	custom_header->num_key = num_keys;
 	custom_header->frag_num = 0;
 	custom_header->total_fragments = 0;
@@ -250,7 +250,6 @@ void udp_send(const char* msg, uint16_t size, const char name[NAME_LEN], const c
 	// divide the packet to as many fragments as necessary
 	// we need header in all fragments so ignore it
 	num_fragments = ceil((double)size / (double)MAX_FRAGMENT);
-	// printf("Need %d fragments for packet of size: %d\n", num_fragments, size);
 
 	int bytes_sent = 0;
 	int cur_send = 0;
@@ -261,7 +260,7 @@ void udp_send(const char* msg, uint16_t size, const char name[NAME_LEN], const c
 
 		memset(buffer, 0, sizeof(buffer));
 
-		if (size-bytes_sent > MAX_FRAGMENT)
+		if (size - bytes_sent > MAX_FRAGMENT)
 			cur_send = MAX_FRAGMENT;
 		else // Last fragment
 			cur_send = size - bytes_sent;
@@ -293,7 +292,6 @@ void udp_send(const char* msg, uint16_t size, const char name[NAME_LEN], const c
 		if (sent < 0) {
 			perror("sendto");
 		}
-        // printf("sent: %zd bytes\n", sent);
 		bytes_sent += cur_send;
 	}
 

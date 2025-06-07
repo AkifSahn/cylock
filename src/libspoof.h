@@ -14,6 +14,7 @@ typedef enum {
 	N_GATEWAY,
 } node_e;
 
+#define MAX_FRAGMENT 16184 // MAX len of our fragments
 #define RECV_PORT 6969
 
 #define NAME_LEN 32

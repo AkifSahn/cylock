@@ -41,7 +41,7 @@ char local_ip[INET_ADDRSTRLEN];
 char broadcast_ip[INET_ADDRSTRLEN];
 
 // in microsecond
-#define NOTIFY_EVENT_TIMER 1000000
+#define NOTIFY_EVENT_TIMER 100000000
 // In microsecond
 #define PRUNE_EVENT_TIMER 60000000
 // in second
@@ -153,9 +153,27 @@ unsigned char* decrypt_incoming_message(const char* buffer, const int cipher_len
 	return plaintext;
 }
 
+fragments fragments_cache;
+
 // GTK thread-safe message post
 void gui_message_callback(const header_t* header, const char* message, int message_len) {
 	// Drop the message, we seen it before
+	const char* payload;
+	if (header->total_fragments > 1) {
+		printf("received fragment: %d\n", header->frag_num);
+		fragment* frag = new_fragment(
+			&fragments_cache, (unsigned char*)message, header->id, header->frag_num, header->total_fragments, header->size);
+		if (frag) {
+			payload = (char*)frag->head;
+			message_len = frag->size;
+			printf("Assembled all the fragments\n");
+		} else {
+			return;
+		}
+	} else {
+		payload = message;
+	}
+
 	if (cache_search(&cache, header->id)) {
 		return;
 	}
@@ -167,7 +185,7 @@ void gui_message_callback(const header_t* header, const char* message, int messa
 		// Save username to known connections
 		if (!has_client(&known_clients, header->name, header->uid)) {
 			// message is public key PEM string
-			add_new_client(&known_clients, header->name, header->uid, header->node_type, message);
+			add_new_client(&known_clients, header->name, header->uid, header->node_type, payload);
 			g_idle_add((GSourceFunc)update_user_list, NULL);
 		}
 		msg_str = g_strdup_printf("%s: %s", header->name, "New connection");
@@ -181,7 +199,7 @@ void gui_message_callback(const header_t* header, const char* message, int messa
 		if (c) { // We already know about this client
 			c->last_seen = time(NULL);
 		} else { // We don't know about this client yet
-			add_new_client(&known_clients, header->name, header->uid, header->node_type, message);
+			add_new_client(&known_clients, header->name, header->uid, header->node_type, payload);
 			g_idle_add((GSourceFunc)update_user_list, NULL);
 		}
 	}
@@ -191,10 +209,8 @@ void gui_message_callback(const header_t* header, const char* message, int messa
 		int msg_len = 0;
 		// Try to decrypt the message
 		unsigned char* dec_msg
-			= decrypt_incoming_message(message, message_len, node.name, header->num_key, node.keypair, &msg_len);
+			= decrypt_incoming_message(payload, message_len, node.name, header->num_key, node.keypair, &msg_len);
 		if (dec_msg && msg_len > 0) {
-			// Show decrypted message
-			printf("received msg_len is: %d\n", msg_len);
 			msg_str = g_strdup_printf("%s: %.*s", header->name, msg_len, dec_msg);
 			free(dec_msg);
 		} else {
@@ -209,11 +225,11 @@ void gui_message_callback(const header_t* header, const char* message, int messa
 	// Relay any incoming message
 	if (node.type == N_GATEWAY) {
 		if (header->node_type == N_GATEWAY && header->cl_flags & CL_RELAYED) { // Only broadcast to subnet if coming from relay
-			udp_send(message, message_len, header->name, header->uid, header->node_type, header->id, known_clients.size,
+			udp_send(payload, message_len, header->name, header->uid, header->node_type, header->id, known_clients.size,
 				broadcast_ip, DEST_PORT, header->cl_flags ^ CL_RELAYED);
 		}
 		for (int i = 0; i < num_gw_ips; ++i) {
-			udp_send(message, message_len, header->name, header->uid, header->node_type, header->id, known_clients.size,
+			udp_send(payload, message_len, header->name, header->uid, header->node_type, header->id, known_clients.size,
 				gateway_ips[i], DEST_PORT, header->cl_flags | CL_RELAYED);
 		}
 	}
@@ -312,6 +328,7 @@ void connect_to_network(GtkWindow* parent) {
 				// Send a CL_CONNECTED message
 				awake_event = new_timer_event(NOTIFY_EVENT_TIMER, 0, timer_awake, &node);
 				prune_event = new_timer_event(PRUNE_EVENT_TIMER, 0, prune_stale_clients, NULL);
+				fragments_cache.size = 0;
 				usleep(100);
 				udp_send(node.pubkey_pem, strlen(node.pubkey_pem), node.name, node.uid, node.type, atomic_fetch_add(&node.id, 1),
 					0, broadcast_ip, DEST_PORT, CL_CONNECTED);
@@ -454,7 +471,6 @@ void send_message(GtkWidget* widget, gpointer data) {
 		free(ciphertext);
 
 		int total_len = pos;
-		printf("Calculated total_len %d\nReal total_len %d\n", total_size, total_len);
 
 		// If gateway, send the message to the other gateways on the gateway_ips.txt list.
 		// Don't spoof the ip source when sending to other gateways
