@@ -297,6 +297,7 @@ void udp_send(const char* msg, size_t size, const char name[NAME_LEN], const cha
 			perror("sendto");
 		}
 		bytes_sent += cur_send;
+        usleep(100);
 	}
 
 	close(sockfd);

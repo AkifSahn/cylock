@@ -36,7 +36,8 @@ enum cl_e {
 	CL_ALIVE = 0x4, // Stil alive
 	CL_RELAYED = 0x8, // Indicates that this packet is relayed
 	CL_ENCRYPTED = 0x10, // Packet is encrypted
-	CL_FILE = 0x20, // This is not a regulare message, but a file in base64 format
+	CL_FILE = 0x20, // This is a file and not a regular text message
+    CL_PRIV = 0x40, // This is a private message
 };
 
 typedef struct {

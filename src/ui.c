@@ -156,6 +156,30 @@ unsigned char* decrypt_incoming_message(const char* buffer, const int cipher_len
 	return plaintext;
 }
 
+// [iv] 16 byte
+// [name_len:uint8_t][name][uint16_t:uid][encrytpted_len:uint16_t][encrypted_key].
+// ...
+// [ciphertext_len:uint32_t][ciphertext].
+bool is_receiver_from_payload(const char* payload, const char name[NAME_LEN], const char uid[UID_LEN]) {
+
+	int pos = AES_IVLEN; // Skip the iv
+	uint8_t name_len;
+	memcpy(&name_len, payload + pos, sizeof(uint8_t));
+	pos += sizeof(uint8_t);
+
+	char recv_name[NAME_LEN];
+	memcpy(recv_name, payload + pos, name_len * sizeof(char));
+	pos += name_len * sizeof(char);
+
+	char recv_uid[UID_LEN];
+	memcpy(recv_uid, payload + pos, UID_LEN * sizeof(char));
+
+	if (!strcmp(recv_name, name) && !memcmp(recv_uid, uid, UID_LEN * sizeof(char))) {
+		return true;
+	}
+	return false;
+}
+
 fragments fragments_cache;
 
 // GTK thread-safe message post
@@ -166,14 +190,19 @@ void gui_message_callback(const header_t* header, const char* message, size_t me
 		return;
 	}
 
+	// Combine the id and frag_num in cache
+	if (cache_search(&cache, ((uint32_t)header->id << 16) | header->frag_num)) {
+		return;
+	}
+	cache_add(&cache, ((uint32_t)header->id << 16) | header->frag_num);
+
 	const char* payload;
 
-	if (header->cl_flags & CL_FILE) {
-		printf("receive:\n");
-		printf("    from: %s\n", header->name);
-		printf("    packet id: %d\n", header->id);
-		printf("    fragment num: %d\n", header->frag_num);
-		printf("    total fragments: %d\n", header->total_fragments);
+    // If we are not the receiver node of a private message, just relay it
+	if (header->cl_flags & CL_PRIV && !is_receiver_from_payload(message, node.name, node.uid)) {
+        printf("    relaying a private message\n");
+		payload = message;
+		goto relay;
 	}
 
 	if (header->total_fragments > 1) {
@@ -189,11 +218,6 @@ void gui_message_callback(const header_t* header, const char* message, size_t me
 	} else {
 		payload = message;
 	}
-
-	if (cache_search(&cache, header->id)) {
-		return;
-	}
-	cache_add(&cache, header->id);
 
 	char* msg_str = NULL;
 
@@ -256,6 +280,7 @@ void gui_message_callback(const header_t* header, const char* message, size_t me
 		g_idle_add(show_incoming_message, msg_str);
 	}
 
+relay:
 	// Relay any incoming message
 	if (node.type == N_GATEWAY) {
 		if (header->node_type == N_GATEWAY && header->cl_flags & CL_RELAYED) { // Only broadcast to subnet if coming from relay

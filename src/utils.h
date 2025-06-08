@@ -18,11 +18,11 @@
 
 typedef struct id_cache {
 	uint8_t i;
-	uint16_t cache[CACHE_SIZE];
+	uint32_t cache[CACHE_SIZE];
 } id_cache;
 
-void cache_add(id_cache* cache, uint16_t e);
-int cache_search(const id_cache* cache, uint16_t e);
+void cache_add(id_cache* cache, uint32_t e);
+int cache_search(const id_cache* cache, uint32_t e);
 void cache_clear(id_cache* cache);
 
 // --- ### ---

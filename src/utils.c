@@ -15,14 +15,14 @@
 
 // --- ID Cache ---
 
-void cache_add(id_cache* cache, uint16_t e) {
+void cache_add(id_cache* cache, uint32_t e) {
 	if (cache->i >= CACHE_SIZE - 1) // rewind back
 		cache->i = 0;
 
 	cache->cache[cache->i++] = e;
 }
 
-int cache_search(const id_cache* cache, uint16_t e) {
+int cache_search(const id_cache* cache, uint32_t e) {
 	for (int i = 0; i < CACHE_SIZE; ++i) {
 		if (cache->cache[i] == e) {
 			return 1;
@@ -32,7 +32,7 @@ int cache_search(const id_cache* cache, uint16_t e) {
 }
 
 void cache_clear(id_cache* cache) {
-	memset(cache->cache, 0, CACHE_SIZE * sizeof(uint16_t));
+	memset(cache->cache, 0, CACHE_SIZE * sizeof(uint32_t));
 	cache->i = 0;
 }
 
